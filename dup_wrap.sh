@@ -3,10 +3,10 @@
 set -euo pipefail
 
 # Set variables
-readonly VERSION="1.0 December 28, 2017"
+readonly VERSION="1.01 January 4, 2018"
 readonly SFHOME="${SFHOME:-/opt/starfish}"
 readonly SF="${SFHOME}/bin"
-readonly PROG="$0"
+readonly PROG="${0##*/}"
 readonly LOGDIR="logs"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly LOGFILE="${LOGDIR}/$(basename ${BASH_SOURCE[0]} '.sh')-$NOW.log"
@@ -86,11 +86,15 @@ options:
   --tmp-dir DIR         Directory used to keep temporary files
 
 Examples:
-$PROG --log "/opt/starfish/log/$PROG-%Y%m%d-%H%M%S.log" --check-unique-file-size sfvol:
-This will run the duplicate checker, running a quick hash on files located on the sfvol: volumes that have a non unique size. Results will be sent to the "/opt/starfish/log/$PROG-%Y%m%d-%H%M%S.log" file
+$PROG --log "/opt/starfish/log/${PROG%.*}-%Y%m%d-%H%M%S.log" --check-unique-file-size sfvol:
+This will run the duplicate checker, running a quick hash on files located on the sfvol: volumes that have a non unique size. Results will be sent to the "/opt/starfish/log/${PROG%.*}-%Y%m%d-%H%M%S.log" file
 
 $PROG --min-size 25M --email "a@a.pl, b@b.com" sfvol1: sfvol2:
 This will run the duplicate checker on both sfvol1 and sfvol2 volumes, looking for duplicates with a minimum size of 25M, and emailing the results to users a@a.pl, b@b.com
+ 
+$PROG --email "user@company.com"
+This will run the duplicate checker on all Starfish volumes, emailing results to user@company.com.
+
 
 EOF
   exit 1
@@ -156,6 +160,7 @@ verify_required_params() {
 if [[ "$EMAILS" == "" ]] && [[ "$LOG_EMAIL_CONTENT" == "" ]]; then
   logprint "Neither email or log was specified, exiting.."
   echo "Neither email or log was specified, exiting.."
+  usage
   exit 1
 fi    
 }
@@ -202,14 +207,16 @@ extract_path_and_filename() {
 
 determine_scanned_volumes() {
   if [[ $VOLUMES = "" ]]; then
-    read -ra VOLUME_ARRAY <<< `cat $DUPLICATE_FILE_PATH/02*`
-    for i in "${VOLUME_ARRAY[@]}"
+    local volume_array
+    local tmp_var
+    read -ra volume_array <<< `cat $DUPLICATE_FILE_PATH/02*`
+    for i in "${volume_array[@]}"
     do
-      IFS=':,'
-      read -ra TMP_VAR <<< "$i"
+      IFS=','
+      read -ra tmp_var <<< "$i"
       unset IFS
-      if [[ ${TMP_VAR[0]} != "volume" ]]; then
-        VOLUMES="$VOLUMES ${TMP_VAR[0]}"
+      if [[ ${tmp_var[0]} != "volume" ]]; then
+        VOLUMES="$VOLUMES ${tmp_var[0]}"
       fi
     done
     logprint "Volume(s) not specified, so the following were scanned: $VOLUMES"
@@ -217,30 +224,48 @@ determine_scanned_volumes() {
 }
 
 generate_email_content() {
-  TOTAL_FILES=`sf query $VOLUMES -H --format "rec_aggrs.files" --maxdepth=0`
-  TOTAL_SIZE=`sf query $VOLUMES -H --format "rec_aggrs.size" --maxdepth=0`
-  SIZEGB=`awk "BEGIN {print ($SIZE/(1024*1024*1024))}"`
-  SIZEWITHORIGINALGB=`awk "BEGIN {print ($SIZE_WITH_ORIGINAL_FILE/(1024*1024*1024))}"`
-  PERCENT_DUP_SIZE=`awk "BEGIN {print ($SIZE * 100 / $TOTAL_SIZE)}"`
-  PERCENT_DUP_COUNT=`awk "BEGIN {print ($COUNT * 100 / $TOTAL_FILES)}"`
-  SUBJECT="Duplicate check report for Starfish volumes ($VOLUMES) - $COUNT Duplicates over $MIN_SIZE, occupying $SIZEGB GB"
+  local total_files
+  local total_size
+  local sizegb
+  local sizewithoriginalgb
+  local percent_dup_size
+  local percent_dup_count
+  local subject
+  local body
+  local vol_files
+  local vol_size
+  logprint "Generating email/log content"
+  read -a volume_array <<< "$VOLUMES"
+  for i in "${volume_array[@]}"
+  do
+    vol_files=`sf query $i -H --format "rec_aggrs.files" --maxdepth=0`
+    vol_size=`sf query $i -H --format "rec_aggrs.size" --maxdepth=0`
+    total_files=$((total_files+vol_files))
+    total_size=$((total_size+vol_size))
+  done
+  sizegb=`awk "BEGIN {print ($SIZE/(1024*1024*1024))}"`
+  sizewithoriginalgb=`awk "BEGIN {print ($SIZE_WITH_ORIGINAL_FILE/(1024*1024*1024))}"`
+  percent_dup_size=`awk "BEGIN {print ($SIZE * 100 / $total_size)}"`
+  percent_dup_count=`awk "BEGIN {print ($COUNT * 100 / $total_files)}"`
+  SUBJECT="Duplicate check report for Starfish volumes ($VOLUMES) - $COUNT Duplicates over $MIN_SIZE, occupying $sizegb GB"
   BODY="
 Duplicate check started at $STARTTIME, and took $SECONDS seconds to finish. 
 
-- $TOTAL_FILES files were scanned.
-- There were $COUNT duplicate files found in $VOLUMES that were over $MIN_SIZE, and those duplicates occupy $SIZEGB GB of space.
-- The size of the duplicates plus their original files is $SIZEWITHORIGINALGB GB.
-- Duplicates occupy $PERCENT_DUP_COUNT % of the total file count, and occupy $PERCENT_DUP_SIZE % of the total file size within $VOLUMES.
+- $total_files files were scanned.
+- There were $COUNT duplicate files found on volumes ($VOLUMES ) that were over $MIN_SIZE, and those duplicates occupy $sizegb GB of space.
+- The size of the duplicates plus their original files is $sizewithoriginalgb GB.
+- Duplicates over $MIN_SIZE occupy $percent_dup_count% of the total file count, and occupy $percent_dup_size% of the total file size within $VOLUMES
 
 The list of duplicate files can be found at: $DUPLICATE_FILE
 "
-
-  if [ ! -z "$LOG_EMAIL_CONTENT" ]; then
+  if [ -n "$LOG_EMAIL_CONTENT" ]; then
+    logprint "Writing output to logfile"
     echo -e "$SUBJECT" > $LOG_EMAIL_CONTENT
     echo -e "$BODY" >> $LOG_EMAIL_CONTENT
   fi
 
-  if [ ! -z "$EMAILS" ]; then
+  if [ -n "$EMAILS" ]; then
+    logprint "Emailing results to $EMAILS"
     (echo -e "$BODY") | mailx -s "$SUBJECT" -r root $EMAILS
   fi
 }
