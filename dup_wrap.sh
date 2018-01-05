@@ -2,12 +2,18 @@
 
 set -euo pipefail
 
+########################################################
+#
+# SF wrapper to enhance user experience of built-in duplicate_check tool 
+#
+########################################################
+
 # Set variables
-readonly VERSION="1.01 January 4, 2018"
-readonly SFHOME="${SFHOME:-/opt/starfish}"
-readonly SF="${SFHOME}/bin"
+readonly VERSION="1.01 January 5, 2018"
 readonly PROG="${0##*/}"
-readonly LOGDIR="logs"
+readonly SFHOME="${SFHOME:-/opt/starfish}"
+readonly LOGDIR="$SFHOME/log/${PROG%.*}"
+readonly SF="${SFHOME}/bin"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly LOGFILE="${LOGDIR}/$(basename ${BASH_SOURCE[0]} '.sh')-$NOW.log"
 
@@ -44,11 +50,11 @@ usage() {
 Duplicate_check wrapper script
 $VERSION
 
-This script is a wrapper that is designed to enhance the user experience of the built-in duplicate_check tool.  This script can be called from cron, and it can email or log the results for further analysis. 
+This script is a wrapper that is designed to enhance the user experience of the built-in duplicate_check tool.  This script can be called from cron, and it can email or log the results for further analysis. Execution log can be found at $LOGDIR
 
 The duplicate_check tool that $PROG invokes is designed to calculate the total size of duplicated files.
- It can operate across all starfish volumes or specific volume.
- The calculation is performed over five phases:
+It can operate across all starfish volumes or specific volume.
+The calculation is performed over five phases:
  - Find all rows with a unique file size
  - Quick-hash all the candidate duplicates
  - Find entries with non unique quick-hash
