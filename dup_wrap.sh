@@ -34,6 +34,14 @@ logprint () {
   echo "$(date +%D-%T): $*" >> $LOGFILE
 }
 
+email_alert() {
+  (echo -e "$1") | mailx -s "$PROG Failed!" -a $LOGFILE -r root sf-status@starfishstorage.com,$EMAILS
+}
+
+email_notify() {
+  (echo -e "$1") | mailx -s "$PROG Completed Successfully" -r root $EMAILS
+}
+
 fatal() {
   echo "$@"
   exit 1
@@ -179,7 +187,15 @@ build_cmd_line() {
 
 run_duplicate_check() {
   STARTTIME=$(date +"%H:%M:%S %m/%d/%Y")
+  set +e
   CMD_OUTPUT=$($CMD_TO_RUN)
+  if [[ $? -ne 0 ]]; then
+    echo "duplicate_check command returned an error. Verify syntax of $PROG and run again"
+    logprint "duplicate_check command returned an error. Verify syntax of $PROG and run again"
+    email_alert "duplicate_check command returned an error. Verify syntax of $PROG and run again"
+    exit 1
+  fi
+  set -e
   ENDTIME=$(date +"%H:%M:%S %m/%d/%Y")
 }
 
