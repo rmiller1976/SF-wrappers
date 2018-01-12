@@ -9,7 +9,7 @@ set -euo pipefail
 ########################################################
 
 # Set variables
-readonly VERSION="1.02 January 11, 2018"
+readonly VERSION="1.03 January 12, 2018"
 readonly PROG="${0##*/}"
 readonly SFHOME="${SFHOME:-/opt/starfish}"
 readonly LOGDIR="$SFHOME/log/${PROG%.*}"
@@ -28,6 +28,7 @@ RESUME_FROM_DIR=""
 TMP_DIR=""
 VOLUMES=""
 DUPLICATE_FILE_PATH=""
+HIDDEN_OPTIONS=""
 
 logprint () {
 # logprint routine called to write to log file. This log is separate from the one called via the --log option at the command line. That log file is for sending results to a log - this log file is for tracking execution of the script
@@ -151,6 +152,11 @@ parse_input_parameters() {
       shift
       TMP_DIR="--tmp-dir=$1"
       ;;
+    "--tag-batch-size")
+      check_parameters_value "$@"
+      HIDDEN_OPTIONS="$HIDDEN_OPTIONS $@"
+      shift
+      ;;
     *)
       if [[ ${1:0:1} != "-" ]]; then
         VOLUMES="$VOLUMES $1"
@@ -168,6 +174,9 @@ parse_input_parameters() {
   logprint "resume_from_dir: $RESUME_FROM_DIR"
   logprint "tmp_dir: $TMP_DIR"
   logprint "volumes: $VOLUMES"
+  if [[ "$HIDDEN_OPTIONS" != "" ]]; then
+    logprint "hidden options: $HIDDEN_OPTIONS"
+  fi
 }
 
 verify_required_params() {
@@ -181,21 +190,23 @@ fi
 
 build_cmd_line() {
   MIN_SIZE_CMD="--min-size=$MIN_SIZE"
-  CMD_TO_RUN="${SF}/duplicate_check $CHECK_UNIQUE_FILE_SIZE $JSON $MIN_SIZE_CMD $RESUME_FROM_DIR $TMP_DIR $VOLUMES"
+  CMD_TO_RUN="${SF}/duplicate_check $CHECK_UNIQUE_FILE_SIZE $JSON $MIN_SIZE_CMD $RESUME_FROM_DIR $TMP_DIR $HIDDEN_OPTIONS $VOLUMES"
   logprint "command to run: $CMD_TO_RUN"
 }
 
 run_duplicate_check() {
+  local errorcode
   STARTTIME=$(date +"%H:%M:%S %m/%d/%Y")
   set +e
-  CMD_OUTPUT=$($CMD_TO_RUN)
-  if [[ $? -ne 0 ]]; then
-    echo "duplicate_check command returned an error. Verify syntax of $PROG and run again"
-    logprint "duplicate_check command returned an error. Verify syntax of $PROG and run again"
-    email_alert "duplicate_check command returned an error. Verify syntax of $PROG and run again"
+  CMD_OUTPUT=$($CMD_TO_RUN 2>&1)
+  errorcode=$?
+  set -e
+  if [[ $errorcode -ne 0 ]]; then
+    echo -e "duplicate_check command failed. Output follows: $CMD_OUTPUT"
+    logprint "duplicate_check command failed. Output follows: $CMD_OUTPUT"
+    email_alert "duplicate_check command failed. Output follows: $CMD_OUTPUT"
     exit 1
   fi
-  set -e
   ENDTIME=$(date +"%H:%M:%S %m/%d/%Y")
 }
 
