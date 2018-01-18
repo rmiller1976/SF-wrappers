@@ -21,6 +21,7 @@ readonly SF="${STARFISH_BIN_DIR}/client"
 readonly SF_RSYNC="${STARFISH_BIN_DIR}/rsync_wrapper"
 
 # global variables
+#EMAIL="sf-status@starfishstorage.com"
 EMAIL=""
 MANIFEST_DIR_FLAG=""
 WAIT_OPT=""
@@ -33,14 +34,15 @@ MANIFEST_DIR="${TMPDIR:-/tmp}"
 MODIFIER="a"
 # workaround as the date is treated as midnight - i.e. files modified today after midnight wouldn't be processed
 DAYS_AGO="-1"
-HIDDEN_OPTIONS=""
+SFJOBOPTIONS=""
+DRYRUN=0
 
 logprint() {
   echo -e "$(date +%D-%T): $*" >> $LOGFILE
 }
 
 email_alert() {
-  (echo -e "$1") | mailx -s "$PROG Failed!" -a $LOGFILE -r root sf-status@starfishstorage.com,$EMAIL
+  (echo -e "$1") | mailx -s "$PROG Failed!" -a $LOGFILE -r root $EMAIL
 }
 
 email_notify() {
@@ -123,7 +125,7 @@ parse_input_parameters() {
     "--email")
       check_parameters_value "$@"
       shift
-      EMAIL=$1
+      EMAIL="$EMAIL,$1"
       ;;
     "--mtime")
       MODIFIER="m"
@@ -161,6 +163,14 @@ parse_input_parameters() {
     "--wait")
       WAIT_OPT="--wait"
       ;;
+    "--sfjoboptions")
+      check_parameters_value "$@"
+      shift
+      SFJOBOPTIONS="$1"
+      ;;
+    "--dryrun")
+      DRYRUN=1
+      ;;
     *)
       logprint "input parameter: $1 unknown. Exiting.."
       fatal "input parameter: $1 unknown. Exiting.."
@@ -178,8 +188,8 @@ parse_input_parameters() {
   logprint " Manifest per dir: $MANIFEST_PER_DIR"
   logprint " Wait Option: $WAIT_OPT"
   logprint " Email: $EMAIL"
-  if [[ "$HIDDEN_OPTIONS" != "" ]]; then
-    logprint "Hidden options: $HIDDEN_OPTIONS"
+  if [[ "$SFJOBOPTIONS" != "" ]]; then
+    logprint "SF job options: $SFJOBOPTIONS"
   fi
 }
 
@@ -188,17 +198,21 @@ build_cmd_line() {
   TIME_OPT="--${MODIFIER}time 19000101-${TIME}"
   # command needs to have params passed with $* not $@ as "upload $@" will add expanded to "upload p1" "p2"
   # and p2 will be treated as source volume
-  CMD_TO_RUN="${SF} job start ${EXTS} ${SIZE} ${TIME_OPT} ${WAIT_OPT} ${MIGRATE_SRC_OPTIONS} \"${SF_RSYNC} ${MOVE_SRC_FILES} $*\" \"${SRC_VOL_WITH_PATH}\" \"${DST_VOL_WITH_PATH}\""
+  CMD_TO_RUN="${SF} job start ${SFJOBOPTIONS} ${EXTS} ${SIZE} ${TIME_OPT} ${WAIT_OPT} ${MIGRATE_SRC_OPTIONS} \"${SF_RSYNC} ${MOVE_SRC_FILES} \$*\" \"${SRC_VOL_WITH_PATH}\" \"${DST_VOL_WITH_PATH}\""
   logprint "command to run: $CMD_TO_RUN"
 }
 
 run_sfjob_cmd() { 
   local errorcode
-  set +e
-  echo "running command: $CMD_TO_RUN"
-  CMD_OUTPUT=$(${SF} job start ${EXTS} ${SIZE} ${TIME_OPT} ${WAIT_OPT} ${MIGRATE_SRC_OPTIONS} "${SF_RSYNC} ${MOVE_SRC_FILES} $*" "${SRC_VOL_WITH_PATH}" "${DST_VOL_WITH_PATH}" 2>&1)
-  errorcode=$?
-  set -e
+echo $DRYRUN
+  if [[ $DRYRUN -ne 0 ]]; then
+    set +e
+    echo "running command: $CMD_TO_RUN"
+    #CMD_OUTPUT=$(${SF} job start ${EXTS} ${SIZE} ${TIME_OPT} ${WAIT_OPT} ${MIGRATE_SRC_OPTIONS} "${SF_RSYNC} ${MOVE_SRC_FILES} \$*" "${SRC_VOL_WITH_PATH}" "${DST_VOL_WITH_PATH}" 2>&1)
+    CMD_OUTPUT=$($CMD_TO_RUN 2>&1)
+    errorcode=$?
+    set -e
+  fi
   if [[ $errorcode -ne 0 ]]; then
     echo -e "sf job command failed. Output follows: $CMD_OUTPUT"
     logprint "sf job command failed. Output follows: $CMD_OUTPUT"
