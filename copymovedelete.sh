@@ -10,7 +10,7 @@ set -euo pipefail
 ###############################################
 
 # Set variables
-readonly VERSION="1.00 January 1x, 2018"
+readonly VERSION="1.00 January 22, 2018"
 readonly PROG="${0##*/}"
 readonly SFHOME="${SFHOME:-/opt/starfish}"
 readonly LOGDIR="$SFHOME/log/${PROG%.*}"
@@ -21,8 +21,8 @@ readonly SF="${STARFISH_BIN_DIR}/client"
 readonly SF_RSYNC="${STARFISH_BIN_DIR}/rsync_wrapper"
 
 # global variables
-#EMAIL="sf-status@starfishstorage.com"
-EMAIL=""
+EMAIL="sf-status@starfishstorage.com"
+#EMAIL=""
 MANIFEST_DIR_FLAG=""
 WAIT_OPT=""
 EXTS=""
