@@ -36,6 +36,7 @@ MODIFIER="a"
 DAYS_AGO="-1"
 SFJOBOPTIONS=""
 DRYRUN=0
+RSYNC_CMD=""
 
 logprint() {
   echo -e "$(date +%D-%T): $*" >> $LOGFILE
@@ -132,7 +133,7 @@ parse_input_parameters() {
       ;;
     "--migrate")
       MOVE_SRC_FILES="--remove-source-files"
-      MIGRATE_SRC_OPTIONS=" --no-entry-verification"
+      MIGRATE_SRC_OPTIONS="--no-entry-verification"
       ;;
     "--days")
       check_parameters_value "$@"
@@ -163,10 +164,13 @@ parse_input_parameters() {
     "--wait")
       WAIT_OPT="--wait"
       ;;
-    "--sfjoboptions")
+    "--from-scratch")
+      SFJOBOPTIONS="$SFJOBOPTIONS --from-scratch"
+      ;;
+    "--job-name")
       check_parameters_value "$@"
       shift
-      SFJOBOPTIONS="$1"
+      SFJOBOPTIONS="$SFJOBOPTIONS --job-name $1"
       ;;
     "--dryrun")
       DRYRUN=1
@@ -196,33 +200,28 @@ parse_input_parameters() {
 build_cmd_line() {
   TIME="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
   TIME_OPT="--${MODIFIER}time 19000101-${TIME}"
-  # command needs to have params passed with $* not $@ as "upload $@" will add expanded to "upload p1" "p2"
-  # and p2 will be treated as source volume
-  CMD_TO_RUN="${SF} job start ${SFJOBOPTIONS} ${EXTS} ${SIZE} ${TIME_OPT} ${WAIT_OPT} ${MIGRATE_SRC_OPTIONS} \"${SF_RSYNC} ${MOVE_SRC_FILES} \$*\" \"${SRC_VOL_WITH_PATH}\" \"${DST_VOL_WITH_PATH}\""
+  CMD_TO_RUN="${SF} job start ${SF_RSYNC} ${SRC_VOL_WITH_PATH} ${DST_VOL_WITH_PATH} ${SFJOBOPTIONS} ${EXTS} ${SIZE} ${TIME_OPT} ${WAIT_OPT} ${MIGRATE_SRC_OPTIONS}"
   logprint "command to run: $CMD_TO_RUN"
 }
 
 run_sfjob_cmd() { 
   local errorcode
-echo $DRYRUN
-  if [[ $DRYRUN -ne 0 ]]; then
-    set +e
+  if [[ $DRYRUN -eq 0 ]]; then
+    set +e 
     echo "running command: $CMD_TO_RUN"
-    #CMD_OUTPUT=$(${SF} job start ${EXTS} ${SIZE} ${TIME_OPT} ${WAIT_OPT} ${MIGRATE_SRC_OPTIONS} "${SF_RSYNC} ${MOVE_SRC_FILES} \$*" "${SRC_VOL_WITH_PATH}" "${DST_VOL_WITH_PATH}" 2>&1)
+ set -x
     CMD_OUTPUT=$($CMD_TO_RUN 2>&1)
+ set +x
     errorcode=$?
     set -e
-  fi
-  if [[ $errorcode -ne 0 ]]; then
-    echo -e "sf job command failed. Output follows: $CMD_OUTPUT"
-    logprint "sf job command failed. Output follows: $CMD_OUTPUT"
-    email_alert "sf job ocmmand failed. Output follows: $CMD_OUTPUT"
-    exit 1
+    if [[ $errorcode -ne 0 ]]; then
+      echo -e "sf job command failed. Output follows: $CMD_OUTPUT"
+      logprint "sf job command failed. Output follows: $CMD_OUTPUT"
+      email_alert "sf job command failed. Output follows: $CMD_OUTPUT"
+      exit 1
+    fi
   fi
 }
-
-
-
 
 [[ $# -lt 2 ]] && usage "Not enough arguments"
 
@@ -277,7 +276,6 @@ echo "Step 6: Execute sf job command"
 run_sfjob_cmd
 echo "Step 6 Complete"
 exit 1
-
 
 if [ ! -z "${MANIFEST_DIR_FLAG}" ] ; then
   ${SF} query --csv --escape-paths --no-headers > "${MANIFEST_DIR}/${arc_tag}"
