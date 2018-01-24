@@ -10,7 +10,7 @@ set -euo pipefail
 ###############################################
 
 # Set variables
-readonly VERSION="1.00 January 22, 2018"
+readonly VERSION="1.00 January 24, 2018"
 readonly PROG="${0##*/}"
 readonly SFHOME="${SFHOME:-/opt/starfish}"
 readonly LOGDIR="$SFHOME/log/${PROG%.*}"
@@ -19,31 +19,30 @@ readonly LOGFILE="${LOGDIR}/$(basename ${BASH_SOURCE[0]} '.sh')-$NOW.log"
 readonly STARFISH_BIN_DIR="${SFHOME}/bin"
 readonly SF="${STARFISH_BIN_DIR}/client"
 readonly SF_RSYNC="${STARFISH_BIN_DIR}/rsync_wrapper"
+readonly SF_TAR="${STARFISH_BIN_DIR}/tar_wrapper"
 
 # global variables
-EMAIL="sf-status@starfishstorage.com"
-#EMAIL=""
+EMAIL=""
 MANIFEST_DIR_FLAG=""
 WAIT_OPT=""
 EXTS=""
 SIZE=""
 MOVE_SRC_FILES=""
 MIGRATE_SRC_OPTIONS=""
-MANIFEST_PER_DIR=""
-MANIFEST_DIR="${TMPDIR:-/tmp}"
 MODIFIER="a"
 # workaround as the date is treated as midnight - i.e. files modified today after midnight wouldn't be processed
 DAYS_AGO="-1"
 SFJOBOPTIONS=""
 DRYRUN=0
 RSYNC_CMD=""
+TAR=0
 
 logprint() {
   echo -e "$(date +%D-%T): $*" >> $LOGFILE
 }
 
 email_alert() {
-  (echo -e "$1") | mailx -s "$PROG Failed!" -a $LOGFILE -r root $EMAIL
+  (echo -e "$1") | mailx -s "$PROG Failed!" -a $LOGFILE -r root sf-status@starfishstorage.com,$EMAIL
 }
 
 email_notify() {
@@ -107,13 +106,15 @@ Require Parameters:
 Optional:
   --days [int]           - files older than this will be archived. Default = 30 days.
   --mtime                - use file modification time for --days. Default = atime.
-  --ext  [extension]     - only archive this extension, if more than one, use "--ext bam --ext fastq"
-  --size [size]          - archive files larger than this size (e.g. 100M or 10G). Default = 100M
-  --manifest-dir         - place a manifest of files moved in directory
-  --manifest-per-dir     - place a manifest in each directory from which files were archived (in .sf-manifest.archive)
+  --ext  [extension]     - only files that match this extension, if more than one, use "--ext bam --ext fastq"
+  --size [size]          - only files larger than this size (e.g. 100M or 10G). Default = 100M
+  --tar			 - create a tar file in the destination directory of the files processed
   --migrate              - remove files from source after copy 
   --wait                 - wait until job is complete
   --email <recipients>   - Recipient(s) for reports/alerts. Comma separated.
+  --from-scratch	 - Run job as if from scratch (do not track internally)
+  --job-name <jobname>   - Specify a job name for the SF job
+  --dry-run		 - Do not execute the sf job command
 EOF
   exit 1
 }
@@ -151,16 +152,6 @@ parse_input_parameters() {
       shift
       SIZE="--size $1-100P"
       ;;
-    "--manifest-dir")
-      check_parameters_value "$@"
-      shift
-      MANIFEST_DIR_FLAG=1
-      MANIFEST_DIR="$1"
-      [ ! -d "${MANIFEST_DIR}" ] && mkdir "${MANIFEST_DIR}"
-      ;;
-    "--manifest-per-dir")
-      MANIFEST_PER_DIR=1
-      ;;
     "--wait")
       WAIT_OPT="--wait"
       ;;
@@ -175,6 +166,9 @@ parse_input_parameters() {
     "--dryrun")
       DRYRUN=1
       ;;
+    "--tar")
+      TAR=1
+      ;;
     *)
       logprint "input parameter: $1 unknown. Exiting.."
       fatal "input parameter: $1 unknown. Exiting.."
@@ -187,20 +181,28 @@ parse_input_parameters() {
   logprint " Days: $DAYS_AGO"
   logprint " Exts: $EXTS"
   logprint " Size: $SIZE"
-  logprint " Manifest Dir Flag: $MANIFEST_DIR_FLAG"
-  logprint " Manifest Directory: $MANIFEST_DIR"
-  logprint " Manifest per dir: $MANIFEST_PER_DIR"
   logprint " Wait Option: $WAIT_OPT"
   logprint " Email: $EMAIL"
+  logprint " Tar: $TAR"
+  logprint " Dryrun: $DRYRUN"
   if [[ "$SFJOBOPTIONS" != "" ]]; then
     logprint "SF job options: $SFJOBOPTIONS"
   fi
 }
 
 build_cmd_line() {
-  TIME="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
-  TIME_OPT="--${MODIFIER}time 19000101-${TIME}"
-  CMD_TO_RUN="${SF} job start ${SF_RSYNC} ${SRC_VOL_WITH_PATH} ${DST_VOL_WITH_PATH} ${SFJOBOPTIONS} ${EXTS} ${SIZE} ${TIME_OPT} ${WAIT_OPT} ${MIGRATE_SRC_OPTIONS}"
+  local rsync_or_tar
+  local rsync_options
+  if [[ $TAR -eq 0 ]]; then
+    TIME="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
+    TIME_OPT="--${MODIFIER}time 19000101-${TIME}"
+    rsync_or_tar="${SF_RSYNC}"
+    rsync_options="${EXTS} ${SIZE} ${TIME_OPT} ${MIGRATE_SRC_OPTIONS}"
+  elif [[ $TAR -eq 1 ]]; then
+    rsync_or_tar="${SF_TAR}"
+    rsync_options=""
+  fi
+  CMD_TO_RUN="${SF} job start ${rsync_or_tar} ${SRC_VOL_WITH_PATH} ${DST_VOL_WITH_PATH} ${SFJOBOPTIONS} ${WAIT_OPT} ${rsync_options}"
   logprint "command to run: $CMD_TO_RUN"
 }
 
@@ -208,10 +210,8 @@ run_sfjob_cmd() {
   local errorcode
   if [[ $DRYRUN -eq 0 ]]; then
     set +e 
-    echo "running command: $CMD_TO_RUN"
- set -x
+    logprint "running command: $CMD_TO_RUN"
     CMD_OUTPUT=$($CMD_TO_RUN 2>&1)
- set +x
     errorcode=$?
     set -e
     if [[ $errorcode -ne 0 ]]; then
@@ -277,16 +277,4 @@ run_sfjob_cmd
 echo "Step 6 Complete"
 exit 1
 
-if [ ! -z "${MANIFEST_DIR_FLAG}" ] ; then
-  ${SF} query --csv --escape-paths --no-headers > "${MANIFEST_DIR}/${arc_tag}"
-fi
-
-# Output data as src, dst, date
-if [ ! -z "${manifest_per_dir}" ] ; then
-    dstroot="$(get_volume_mount "${dst_vol}")"
-    ${SF} query --csv --escape-paths --no-headers --tag-explicit "${arc_tag}" | while read line ; do
-        man_dir="$(echo "${line}" | cut -f 11 | sed -e 's/\"//g' | xargs dirname)"
-        echo "${srcroot}/${src_path}, ${dstroot}/${dst_path}, ${arc_date}" >> "${srcroot}/${man_dir}/.sf-manifest.archive"
-    done
-fi
 
