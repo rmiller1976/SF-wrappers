@@ -10,7 +10,7 @@ set -euo pipefail
 ###############################################
 
 # Set variables
-readonly VERSION="1.00 January 24, 2018"
+readonly VERSION="1.00 January 25, 2018"
 readonly PROG="${0##*/}"
 readonly SFHOME="${SFHOME:-/opt/starfish}"
 readonly LOGDIR="$SFHOME/log/${PROG%.*}"
@@ -24,14 +24,13 @@ readonly SF_TAR="${STARFISH_BIN_DIR}/tar_wrapper"
 # global variables
 EMAIL=""
 MANIFEST_DIR_FLAG=""
-WAIT_OPT=""
 EXTS=""
 SIZE=""
 MOVE_SRC_FILES=""
 MIGRATE_SRC_OPTIONS=""
 MODIFIER="a"
 # workaround as the date is treated as midnight - i.e. files modified today after midnight wouldn't be processed
-DAYS_AGO="-1"
+DAYS_AGO="30"
 SFJOBOPTIONS=""
 DRYRUN=0
 RSYNC_CMD=""
@@ -92,7 +91,7 @@ usage() {
 Starfish copy/move/delete script
 $VERSION
 
-This script is a wrapper that invokes the SF job engine to copy/move/delete data using rsync_wrapper.
+This script is a wrapper that invokes the SF job engine to copy/move/delete data using rsync_wrapper by default, or optionally the tar_wrapper
 
 USAGE:
 ${PROG} <source volume>:<source path> <destination volume>:<destination path> [options]
@@ -103,18 +102,21 @@ Require Parameters:
   <source volume>:<source path> 		- Source volume and path to archive
   <destination volume>:<destination path>	- Destination volume and path
 
-Optional:
+Optional (rsync_wrapper only):
   --days [int]           - files older than this will be archived. Default = 30 days.
   --mtime                - use file modification time for --days. Default = atime.
   --ext  [extension]     - only files that match this extension, if more than one, use "--ext bam --ext fastq"
+  --migrate              - remove files from source after copy  (default = no)
   --size [size]          - only files larger than this size (e.g. 100M or 10G). Default = 100M
-  --tar			 - create a tar file in the destination directory of the files processed
-  --migrate              - remove files from source after copy 
-  --wait                 - wait until job is complete
-  --email <recipients>   - Recipient(s) for reports/alerts. Comma separated.
+
+Optional (tar only):
+  --tar			 - create a tar file in the destination directory of the files processed. 
+
+Option (rsync or tar):
+  --email <recipients>   - Recipient(s) for reports/alerts. Comma separated list.
   --from-scratch	 - Run job as if from scratch (do not track internally)
   --job-name <jobname>   - Specify a job name for the SF job
-  --dry-run		 - Do not execute the sf job command
+  --dryrun		 - Do not execute the sf job command (useful for verifying command that will be run)
 EOF
   exit 1
 }
@@ -152,9 +154,6 @@ parse_input_parameters() {
       shift
       SIZE="--size $1-100P"
       ;;
-    "--wait")
-      WAIT_OPT="--wait"
-      ;;
     "--from-scratch")
       SFJOBOPTIONS="$SFJOBOPTIONS --from-scratch"
       ;;
@@ -181,43 +180,51 @@ parse_input_parameters() {
   logprint " Days: $DAYS_AGO"
   logprint " Exts: $EXTS"
   logprint " Size: $SIZE"
-  logprint " Wait Option: $WAIT_OPT"
   logprint " Email: $EMAIL"
-  logprint " Tar: $TAR"
+  logprint " Tar: $TAR (if 1, values for Exts, Size, Days, Modifier, and migrate are ignored)"
   logprint " Dryrun: $DRYRUN"
   if [[ "$SFJOBOPTIONS" != "" ]]; then
     logprint "SF job options: $SFJOBOPTIONS"
   fi
 }
 
-build_cmd_line() {
+build_and_run_cmd_line() {
+# This script builds and runs the command to be executed in one step. Breaking it up into multiple
+# steps and executing via $(command) command substitution resulted in parameters meant for
+# rsync_wrapper (ie, -migrate) to be interpreted as being for the job engine, which caused the
+# script to error out. 
+
   local rsync_or_tar
-  local rsync_options
+  local cmd_options
+  local errorcode
+  local joboutput
+  local jobid
   if [[ $TAR -eq 0 ]]; then
     TIME="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
     TIME_OPT="--${MODIFIER}time 19000101-${TIME}"
-    rsync_or_tar="${SF_RSYNC}"
-    rsync_options="${EXTS} ${SIZE} ${TIME_OPT} ${MIGRATE_SRC_OPTIONS}"
+    rsync_or_tar="${SF_RSYNC} ${MOVE_SRC_FILES}"
+    cmd_options="${EXTS} ${SIZE} ${TIME_OPT} ${MIGRATE_SRC_OPTIONS}"
   elif [[ $TAR -eq 1 ]]; then
     rsync_or_tar="${SF_TAR}"
-    rsync_options=""
+    cmd_options=""
   fi
-  CMD_TO_RUN="${SF} job start ${rsync_or_tar} ${SRC_VOL_WITH_PATH} ${DST_VOL_WITH_PATH} ${SFJOBOPTIONS} ${WAIT_OPT} ${rsync_options}"
-  logprint "command to run: $CMD_TO_RUN"
-}
-
-run_sfjob_cmd() { 
-  local errorcode
   if [[ $DRYRUN -eq 0 ]]; then
     set +e 
-    logprint "running command: $CMD_TO_RUN"
-    CMD_OUTPUT=$($CMD_TO_RUN 2>&1)
+    logprint "Starting SF job engine"
+    joboutput="$(${SF} job start "${rsync_or_tar}" ${SRC_VOL_WITH_PATH} ${DST_VOL_WITH_PATH} ${SFJOBOPTIONS} --wait ${cmd_options} 2>&1 | sed -n 1p)"
     errorcode=$?
     set -e
-    if [[ $errorcode -ne 0 ]]; then
-      echo -e "sf job command failed. Output follows: $CMD_OUTPUT"
-      logprint "sf job command failed. Output follows: $CMD_OUTPUT"
-      email_alert "sf job command failed. Output follows: $CMD_OUTPUT"
+    jobid=`echo "$joboutput" | awk '{print substr($0,length($0)-11,4)}'` 
+    if [[ $errorcode -eq 0 ]]; then
+      logprint "SF job ID $jobid completed successfully"
+    else
+      set +e
+      logprint "SF job failed with error: $errorcode"
+      logprint "SF job status: $(sf job show $jobid)"
+      echo "SF job failed with error: $errorcode"
+      echo "SF job status: $(sf job show $jobid)"
+      email_alert "SF job failed. Job status $(sf job show $jobid)"
+      set -e
       exit 1
     fi
   fi
@@ -269,12 +276,9 @@ echo "Step 3 complete"
 echo "Step 4: Get path to the source volume"
 SRCROOT="$(get_volume_mount "${SRC_VOL}")"
 echo "Step 4 complete"
-echo "Step 5: Build command line"
-build_cmd_line
-echo "Step 5 complete"
-echo "Step 6: Execute sf job command"
-run_sfjob_cmd
-echo "Step 6 Complete"
+echo "Step 5: Build and run command line"
+build_and_run_cmd_line
+echo "Step 5 Complete"
 exit 1
 
 
