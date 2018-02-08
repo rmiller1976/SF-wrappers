@@ -10,7 +10,7 @@ set -euo pipefail
 ###############################################
 
 # Set variables
-readonly VERSION="1.00 January 25, 2018"
+readonly VERSION="1.01 February 8, 2018"
 readonly PROG="${0##*/}"
 readonly SFHOME="${SFHOME:-/opt/starfish}"
 readonly LOGDIR="$SFHOME/log/${PROG%.*}"
@@ -23,13 +23,15 @@ readonly SF_TAR="${STARFISH_BIN_DIR}/tar_wrapper"
 
 # global variables
 EMAIL=""
+EMAILFROM="root"
 MANIFEST_DIR_FLAG=""
 EXTS=""
-SIZE=""
+MINSIZE=""
+MAXSIZE=""
+SIZERANGE=""
 MOVE_SRC_FILES=""
 MIGRATE_SRC_OPTIONS=""
 MODIFIER="a"
-# workaround as the date is treated as midnight - i.e. files modified today after midnight wouldn't be processed
 DAYS_AGO="30"
 SFJOBOPTIONS=""
 DRYRUN=0
@@ -41,11 +43,11 @@ logprint() {
 }
 
 email_alert() {
-  (echo -e "$1") | mailx -s "$PROG Failed!" -a $LOGFILE -r root sf-status@starfishstorage.com,$EMAIL
+  (echo -e "$1") | mailx -s "$PROG Failed!" -a $LOGFILE -r $EMAILFROM sf-status@starfishstorage.com,$EMAIL
 }
 
 email_notify() {
-  (echo -e "$1") | mailx -s "$PROG Completed Successfully" -r root $EMAIL
+  (echo -e "$1") | mailx -s "$PROG Completed Successfully" -r $EMAILFROM $EMAIL
 }
 
 fatal() {
@@ -103,20 +105,34 @@ Require Parameters:
   <destination volume>:<destination path>	- Destination volume and path
 
 Optional (rsync_wrapper only):
-  --days [int]           - files older than this will be archived. Default = 30 days.
+  --days [int]           - files older than this will be copied, based on midnight. Default = 30 days.
   --mtime                - use file modification time for --days. Default = atime.
   --ext  [extension]     - only files that match this extension, if more than one, use "--ext bam --ext fastq"
   --migrate              - remove files from source after copy  (default = no)
-  --size [size]          - only files larger than this size (e.g. 100M or 10G). Default = 100M
+  --minsize [size]       - only files larger than this size (e.g. 100M or 10G). Default = 100M
+  --maxsize [size]	 - only files smaller than this size (e.g. 100M or 10G). Default = 100P
+           NOTE: minsize and maxsize cannot be used together!
 
 Optional (tar only):
   --tar			 - create a tar file in the destination directory of the files processed. 
 
-Option (rsync or tar):
+Optional (rsync or tar):
   --email <recipients>   - Recipient(s) for reports/alerts. Comma separated list.
+  --from <sender>	 - Email sender (default: root)
   --from-scratch	 - Run job as if from scratch (do not track internally)
   --job-name <jobname>   - Specify a job name for the SF job
   --dryrun		 - Do not execute the sf job command (useful for verifying command that will be run)
+
+Examples:
+$PROG nfs3:1 nfs4: --email user@company.com
+Runs an rsync, copying data older than 30 days between the size range of 100M and 100P from nfs3:1 to nfs4. Email user@company.com with error during job execution
+
+$PROG nfs3:1 nfs4: --days 0 --minsize 0b 
+Runs an rsync, copying all data up to midnight last night between the size range of 0b and 100P from nfs3:1 to nfs4.
+
+$PROG nfs3:1 nfs4: --days -1 --minsize 50k
+Runs an rsync, copying all data (even data past midnight last night) between the size range of 50k and 100P from nfs3:1 to nfs4.
+
 EOF
   exit 1
 }
@@ -131,6 +147,11 @@ parse_input_parameters() {
       shift
       EMAIL="$EMAIL,$1"
       ;;
+    "--from")
+      check_parameters_value "$@"
+      shift
+      EMAILFROM=$1
+      ;;
     "--mtime")
       MODIFIER="m"
       ;;
@@ -142,17 +163,24 @@ parse_input_parameters() {
       check_parameters_value "$@"
       shift
       DAYS_AGO="$1"
-      [ "${DAYS_AGO}" -gt 0 ] || fatal "--days must be greater then zero! (but is: ${DAYS_AGO})"
+      if [[ "${DAYS_AGO}" -lt -1 ]]; then
+        fatal "--days must be -1 or greater! (but is: ${DAYS_AGO})"
+      fi
       ;;
     "--ext")
       check_parameters_value "$@"
       shift
       EXTS="${EXTS} --ext $1"
       ;;
-    "--size")
+    "--minsize")
       check_parameters_value "$@"
       shift
-      SIZE="--size $1-100P"
+      MINSIZE="$1"
+      ;;
+    "--maxsize")
+      check_parameters_value "$@"
+      shift
+      MAXSIZE="$1"
       ;;
     "--from-scratch")
       SFJOBOPTIONS="$SFJOBOPTIONS --from-scratch"
@@ -175,11 +203,21 @@ parse_input_parameters() {
     esac
     shift
   done
+  if [[ $MINSIZE != "" ]] && [[ $MAXSIZE != "" ]]; then
+    logprint "Both minsize and maxsize specified. Exiting.."
+    fatal "Both minsize and maxsize specified. Exiting.."
+  elif [[ $MINSIZE == "" ]] && [[ $MAXSIZE == "" ]]; then
+    SIZERANGE="--size 100M-100P"
+  elif [[ $MINSIZE == "" ]]; then
+    SIZERANGE="--size 0B-$MAXSIZE"
+  elif [[ $MAXSIZE == "" ]]; then
+    SIZERANGE="--size $MINSIZE-100P"
+  fi
   logprint " Modifier: $MODIFIER"
   logprint " Migrate Options: $MOVE_SRC_FILES"
   logprint " Days: $DAYS_AGO"
   logprint " Exts: $EXTS"
-  logprint " Size: $SIZE"
+  logprint " Size: $SIZERANGE"
   logprint " Email: $EMAIL"
   logprint " Tar: $TAR (if 1, values for Exts, Size, Days, Modifier, and migrate are ignored)"
   logprint " Dryrun: $DRYRUN"
@@ -203,7 +241,7 @@ build_and_run_cmd_line() {
     TIME="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
     TIME_OPT="--${MODIFIER}time 19000101-${TIME}"
     rsync_or_tar="${SF_RSYNC} ${MOVE_SRC_FILES}"
-    cmd_options="${EXTS} ${SIZE} ${TIME_OPT} ${MIGRATE_SRC_OPTIONS}"
+    cmd_options="${EXTS} ${SIZERANGE} ${TIME_OPT} ${MIGRATE_SRC_OPTIONS}"
   elif [[ $TAR -eq 1 ]]; then
     rsync_or_tar="${SF_TAR}"
     cmd_options=""
