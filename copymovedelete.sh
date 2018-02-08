@@ -93,7 +93,8 @@ usage() {
 Starfish copy/move/delete script
 $VERSION
 
-This script is a wrapper that invokes the SF job engine to copy/move/delete data using rsync_wrapper by default, or optionally the tar_wrapper
+This script is a wrapper that invokes the SF job engine to copy/move/delete data using rsync_wrapper by default, or optionally the tar_wrapper.
+This script collects data based on the last SF scan of the source volume.
 
 USAGE:
 ${PROG} <source volume>:<source path> <destination volume>:<destination path> [options]
@@ -127,11 +128,11 @@ Examples:
 $PROG nfs3:1 nfs4: --email user@company.com
 Runs an rsync, copying data older than 30 days between the size range of 100M and 100P from nfs3:1 to nfs4. Email user@company.com with error during job execution
 
-$PROG nfs3:1 nfs4: --days 0 --minsize 0b 
-Runs an rsync, copying all data up to midnight last night between the size range of 0b and 100P from nfs3:1 to nfs4.
+$PROG nfs3:1 nfs4: --days 0 --minsize 100K 
+Runs an rsync, copying all data up to midnight last night between the size range of 100K and 100P from nfs3:1 to nfs4.
 
-$PROG nfs3:1 nfs4: --days -1 --minsize 50k
-Runs an rsync, copying all data (even data past midnight last night) between the size range of 50k and 100P from nfs3:1 to nfs4.
+$PROG nfs3:1 nfs4: --days -1 --maxsize 50K
+Runs an rsync, copying all data (even data past midnight last night) between the size range of 0B and 50K from nfs3:1 to nfs4.
 
 EOF
   exit 1
