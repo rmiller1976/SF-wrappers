@@ -39,7 +39,7 @@ set -euo pipefail
 #********************************************************
 
 # Set variables
-readonly VERSION="1.0 February 20, 2018"
+readonly VERSION="1.0 February 22, 2018"
 PROG="${0##*/}"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly SFHOME="${SFHOME:-/opt/starfish}"
@@ -96,7 +96,7 @@ $PROG <volume> [options]
 
 Required:
    <volume>	              - Starfish volume to remove data from. Accepts either <volume>, <volume:>, or <volume:path> format
-   --email <recipients>	      - Email reports to <recipients> (comma separated)
+   --email <recipients>	      - Email notifications to <recipients> (comma separated)
 
 Optional:
    --days		      - Remove data older than X days (Default 365)
@@ -160,7 +160,7 @@ parse_input_parameters() {
   logprint " a/mtime: $MODIFIER"
   logprint " Email From: $EMAILFROM"
   logprint " Email: $EMAIL"
-  logprint " Dry run: $DRYRUN"
+  [[ -z $DRYRUN ]] || logprint " Dry run: $DRYRUN"
 }
 
 check_mailx_exists() {
@@ -214,15 +214,11 @@ modify_filelist() {
   logprint "full mounted path: $fullpath"
   
 # replace root SF volume name with fullpath
-  echo $volume
-  echo $fullpath
   `sed -i "s;$volume;$fullpath;g" ${FILELIST}-1.tmp`
 
 # change \n at the end of every line to \0 so that SF remove can accept input
   `tr '\n' '\0' < ${FILELIST}-1.tmp > ${FILELIST}-2.tmp`
-
-exit 1
-
+  set -e
 }
 
 build_and_run_job_command() {
@@ -232,13 +228,12 @@ build_and_run_job_command() {
   OLDER_THAN="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
   set +e
   logprint "Starting SF job engine"
-  joboutput="$(${SF} job start "${SFREMOVE} ${FILELIST} ${DRYRUN}" "$SFVOLUME" --from-scratch --no-entry-verification --wait)"
+  joboutput="$(${SF} job start "${SFREMOVE} --from-file ${FILELIST} ${DRYRUN}" "$SFVOLUME" --from-scratch --no-entry-verification --wait 2>&1 | sed -n 1p)"
   errorcode=$?
   set -e
   jobid=`echo "$joboutput" | awk '{print substr($0,length($0)-11,4)}'`
   if [[ $errorcode -eq 0 ]]; then
     logprint "SF job ID $jobid completed successfully"
-    logprint $joboutput
   else
     set +e
     logprint "SF job failed with error: $errorcode"
@@ -271,16 +266,17 @@ echo "Step 1 Complete"
 echo "Step 2: Verify prereq's (mailx)"
 check_mailx_exists
 echo "Step 2 - mailx verified"
-echo "Step 3 Complete"
-echo "Step 4: Run SF query command"
+echo "Step 2 Complete"
+echo "Step 3: Run SF query command"
 run_sf_query
-echo "Step 4 Complete"
-echo "Step 5: Modify $FILELIST"
+echo "Step 3 Complete"
+echo "Step 4: Modify $FILELIST"
 modify_filelist
-echo "Step 5 Complete"
-echo "Step 6: Build and run job command"
+echo "Step 4 Complete"
+echo "Step 5: Build and run job command"
 build_and_run_job_command
-echo "Step 6 Complete"
+echo "Step 5 Complete"
+email_notify "Options specified: $SFVOLUME, use ${MODIFIER}time, files older than $DAYS_AGO days old, $DRYRUN"
 echo "Script complete"
 
 
