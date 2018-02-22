@@ -228,7 +228,7 @@ build_and_run_job_command() {
   OLDER_THAN="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
   set +e
   logprint "Starting SF job engine"
-  joboutput="$(${SF} job start "${SFREMOVE} --from-file ${FILELIST} ${DRYRUN}" "$SFVOLUME" --from-scratch --no-entry-verification --wait 2>&1 | sed -n 1p)"
+  joboutput="$(${SF} job start "${SFREMOVE} --from-file ${FILELIST}-2.tmp ${DRYRUN}" "$SFVOLUME" --from-scratch --no-entry-verification --wait 2>&1 | sed -n 1p)"
   errorcode=$?
   set -e
   jobid=`echo "$joboutput" | awk '{print substr($0,length($0)-11,4)}'`
