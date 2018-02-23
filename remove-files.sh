@@ -56,6 +56,8 @@ EMAILFROM=root
 DRYRUN=""
 MODIFIER="a"
 DAYS_AGO="365"
+LOWMARK=80
+HIGHMARK=85
 
 logprint() {
   echo "$(date +%D-%T): $*" >> $LOGFILE
@@ -103,6 +105,8 @@ Optional:
    --from <sender>	      - Email sender (default: root)
    --mtime		      - Use mtime (default is atime)
    --dry-run		      - Do not actually remove data. Useful to see what files would be rmeoved.
+   --low <#>		      - Specify a low water mark (# is between 0 and 100, default=80)
+   --high <#>		      - Specify a high water mark (# is between 0 and 100, default=85)
 
 
 Examples:
@@ -245,6 +249,8 @@ build_and_run_job_command() {
     exit 1
   fi
 }
+
+[[ $# -lt 1 ]] && usage "Not enough arguments";
 
 # if first parameter is -h or --help, call usage routine
 if [ $# -gt 0 ]; then
