@@ -110,6 +110,12 @@ Optional:
   --exclude <volume>	- Exclude volume from scan
   --from <sender>	- Email sender (default: root)
 
+${PROG} --email bob@company.com --parallel 10 --mtime 5
+Run up to 10 volume scans in parallel, looking at the scan 5 scans ago for each volume to determine whether this should be a differential or mtime scan. Email recipient for notifications is bob@company.com
+
+${PROG} --email bob@company.com --mtime 0 --exclude sfvol4 --exclude sfvol5
+Run up to 3 volume scans in parallel, looking only at the first (initial) scan for each volume (resulting in all scans being a differential). Exclude volumes sfvol4 and sfvol5 from being scanned.
+
 EOF
 exit 1
 }
