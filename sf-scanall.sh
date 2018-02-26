@@ -222,7 +222,6 @@ last_scan() {
       set +e
       scantype=""
       scantype=$(${SF} scan list $volume  -n $MTIMECHK --format="type status" --no-headers | grep -v "ing" | grep "done" | head -1 | cut -f 1 -d" ")
-      echo $scantype
       set -e
         if  [[ "${scantype}" = "diff" ]]; then
       	  TARGETMTIME+=$volume" "
