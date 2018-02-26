@@ -66,7 +66,7 @@ logprint() {
 }
 
 email_alert() {
-  (echo -e "$1") | mailx -s "$PROG Failed!" -a $LOGFILE -r $EMAILFROM $EMAIL
+  (echo -e "$1") | mailx -s "$PROG Issue!" -a $LOGFILE -r $EMAILFROM $EMAIL
 }
 
 email_notify() {
@@ -92,8 +92,10 @@ usage() {
     fi
 
     cat <<EOF
-Run scans in parallel
+Run SF scans in parallel
 $VERSION
+
+This script initiates multiple SF volume scans in parallel. NOTE - if a previous scan for a volume failed, the volume may be skipped, depending on what value is set for --mtime. In this situation, either change the value of --mtime, or manually run a scan of the volume.
 
 ${PROG} --email <recipients> [options]
 
@@ -188,21 +190,21 @@ determine_scan_list() {
   allvolumes=$(${SF} volume list --format 'vol' --no-headers)
   logprint "List of all volumes: $allvolumes"
 # Remove excluded volumes from list
-#  if [[ ${#EXCL_LIST[@]} > 0 ]]; then
-    for volume in $allvolumes 
-      do
-        addvolume=1
+  for volume in $allvolumes 
+    do
+      addvolume=1
+      if [[ ${#EXCL_LIST[@]} > 0 ]]; then
         for excl_volume in "${EXCL_LIST[@]}"
           do
             if [[ $excl_volume == $volume ]]; then
               addvolume=0
             fi
           done
-        if [[ ${addvolume} -eq 1 ]]; then
-          SFVOLUMES+=($volume)
-        fi
-      done
-#  fi
+      fi
+      if [[ ${addvolume} -eq 1 ]]; then
+        SFVOLUMES+=($volume)
+      fi
+    done
   logprint "List of volumes to be scanned: ${SFVOLUMES[@]}"
 }
 
@@ -211,12 +213,17 @@ last_scan() {
 # figure out when last diff scan was, and decide whether we run diff or mtime.
   for volume in "${SFVOLUMES[@]}"
     do
+      set +e
+      scantype=""
       scantype=$(${SF} scan list $volume  -n $MTIMECHK --format="type status" --no-headers | grep -v "ing" | grep "done" | head -1 | cut -f 1 -d" ")
+      echo $scantype
+      set -e
         if  [[ "${scantype}" = "diff" ]]; then
-          logprint "Previous scan for ${volume} was a diff"
       	  TARGETMTIME+=$volume" "
+        elif [[ "${scantype}" = "" ]]; then
+          logprint "Failed scan for $volume detected. Volume will be skipped. Either modify the --mtime value, or manually initiate a scan outside of this script. Other volumes will be scanned."
+          email_alert "Failed scan for $volume detected. Volume will be skipped. Either modify the --mtime value, or manually initiate a scan outside of the sf-scanall script. Other volumes will be scanned."
         else
-          logprint "Previous scan for ${volume} was NOT a diff"
           TARGETDIFF+=$volume" "
         fi
     done
