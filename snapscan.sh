@@ -39,7 +39,7 @@ set -euo pipefail
 #********************************************************
 
 # Set variables
-readonly VERSION="1.04 January 26, 2018"
+readonly VERSION="1.05 March 1, 2018"
 readonly PROG="${0##*/}"
 readonly SFHOME="${SFHOME:-/opt/starfish}"
 readonly LOGDIR="$SFHOME/log/${PROG%.*}"
@@ -54,6 +54,7 @@ HOST=""
 SNAP=""
 PATHINSNAPSHOT=""
 EMAIL=""
+EMAILFROM="root"
 MOUNT_OUTPUT=""
 LATEST_SNAPSHOT=""
 FULL_MOUNT_PATH=""
@@ -66,11 +67,11 @@ logprint() {
 }
 
 email_alert() {
-  (echo -e "$1") | mailx -s "$PROG Failed!" -a $LOGFILE -r root sf-status@starfishstorage.com,$EMAIL
+  (echo -e "$1") | mailx -s "$PROG Failed!" -a $LOGFILE -r $EMAILFROM $EMAIL
 }
 
 email_notify() {
-  (echo -e "$1") | mailx -s "$PROG Completed Successfully" -r root $EMAIL
+  (echo -e "$1") | mailx -s "$PROG Completed Successfully" -r $EMAILFROM $EMAIL
 }
 
 fatal() {
@@ -91,7 +92,7 @@ usage() {
   fi
   cat <<EOF
 
-Starfish Snapshot and Mount script for Isilon
+Starfish Snapshot and Mount script 
 $VERSION
 
 This script mounts a snapshot to the /mnt/sf location, assigns it to a provided Starfish volume name, performs a Starfish scan, and unmounts the snapshot. Execution logs are kept at $LOGDIR
@@ -112,6 +113,7 @@ Required Parameters:
 Optional:
    --mtime				- Use mtime scan (default = diff)
    --nfs4				- Use NFS v4 (default=NFS v3)
+   --from <sender>			- Send email from <sender> (default=root)
 
 Examples:
 $PROG sfvol --host nfsserver.company.com:/ifs/.snapshot --snap Snap_Weekly --path company/Userdata --email bob@company.com
@@ -164,6 +166,11 @@ parse_input_parameters() {
     "--nfs4")
       NFS="vers=4"
       ;;
+    "--from")
+      check_parameters_value "$@"
+      shift
+      EMAILFROM=$1
+      ;; 
     *)
       logprint "input parameter: $1 unknown. Exiting.."
       fatal "input parameter: $1 unknown. Exiting.." 
@@ -176,6 +183,7 @@ parse_input_parameters() {
   logprint " Snapshot name: $SNAP"
   logprint " Path in Snapshot: $PATHINSNAPSHOT"
   logprint " Email: $EMAIL"
+  logprint " Email From: $EMAILFROM"
   logprint " Type: $SCANTYPE"
   logprint " Mountpath: $MOUNTPATH"
   logprint " NFS: $NFS"
@@ -184,25 +192,18 @@ parse_input_parameters() {
 verify_sf_volume() {
   local sf_vol_list_output
   local errorcode
-  logprint "Checking if $SFVOLUMENAME exists in Starfish"
+  logprint "Checking if $1 exists in Starfish"
   set +e
-  sf_vol_list_output=$(sf volume list | grep $SFVOLUMENAME)
+  sf_vol_list_output=$(sf volume list | grep $1)
   set -e
   if [[ -z "$sf_vol_list_output" ]]; then
-    errorcode="Starfish volume $SFVOLUMENAME is not a Starfish configured volume. The following process can be followed to create a new Starfish volume for use with this script, if necessary:
-1) mkdir /mnt/sf/$SFVOLUMENAME
-2) run 'mount -o noatime,vers=3 {isilon_host:/path_to_snapshot_data} /mnt/sf/$SFVOLUMENAME'
-3) sf volume add $SFVOLUMENAME /mnt/sf/$SFVOLUMENAME
-4) sf volume list (to verify volume added)
-5) sf scan list (to verify SF can access and scan the volume)
-6) sf scan pending (to verify the volume does not have a currently running scan)
-7) umount /mnt/sf/$SFVOLUMENAME (unmount volume in preparation for running this script)"
+    errorcode="Starfish volume $1 is not a Starfish configured volume."
     logprint "$errorcode"
     echo -e "$errorcode"
     email_alert "$errorcode"
     exit 1
   fi
-  logprint "$SFVOLUMENAME found in Starfish"
+  logprint "$1 found in Starfish"
 }
 
 mount_vol() {
@@ -264,30 +265,12 @@ unmount_vol() {
   fi
 }
   
-add_volume_to_sf() {
-  local errorcode
-  local sfaddoutput
-  logprint "Adding $1 located at $2 to Starfish.."
-  set +e
-  sfaddoutput="$(sf volume add $1 $2 2>&1)"
-  errorcode=$?
-  set -e
-  if [[ $errorcode -eq 0 ]]; then
-    logprint "sf volume added"
-  else
-    logprint "sf volume add failed with error: $sfaddoutput. \n\r\n\r Exiting.."
-    echo -e "sf volume add failed with error: $sfaddoutput. \n\r\n\r Exiting.."
-    email_alert "sf volume add failed with error: $sfaddoutput"
-    exit 1
-  fi
-}
-  
 initiate_scan() {
   local errorcode
   local scanoutput
   logprint "Starting scan of $1"
   set +e
-  scanoutput="$(sf scan start $1 --wait $SCANTYPE 2>&1 | sed -n 3p)"
+  scanoutput="$(sf scan start $1 --wait $SCANTYPE 2>&1 | grep "Scan id")"
   errorcode=$?
   set -e
   SCANID=${scanoutput:9}
@@ -336,7 +319,7 @@ parse_input_parameters $@
 echo "Step 1 complete"
 LOCAL_MOUNTPATH="$MOUNTPATH/$SFVOLUMENAME"
 echo "Step 2: Verify SF volume defined"
-verify_sf_volume
+verify_sf_volume $SFVOLUMENAME
 echo "Step 2 complete"
 echo "Step 3: Verify mount path exists"
 check_path_exists $LOCAL_MOUNTPATH
@@ -354,7 +337,6 @@ echo "Step 6 complete"
 echo "Step 7: Mount full path"
 mount_vol $FULL_MOUNT_PATH $LOCAL_MOUNTPATH
 echo "Step 7 complete"
-#add_volume_to_sf $SFVOLUMENAME $LOCAL_MOUNTPATH
 echo "Step 8: Start scan. NOTE - this can take a while. Run 'sf scan list' in another window to check progress"
 initiate_scan $SFVOLUMENAME
 echo "Step 8 complete"
