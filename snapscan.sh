@@ -39,7 +39,7 @@ set -euo pipefail
 #********************************************************
 
 # Set variables
-readonly VERSION="1.05 March 1, 2018"
+readonly VERSION="1.05 March 2, 2018"
 readonly PROG="${0##*/}"
 readonly SFHOME="${SFHOME:-/opt/starfish}"
 readonly LOGDIR="$SFHOME/log/${PROG%.*}"
@@ -118,7 +118,11 @@ Optional:
 Examples:
 $PROG sfvol --host nfsserver.company.com:/ifs/.snapshot --snap Snap_Weekly --path company/Userdata --email bob@company.com
 
-This will mount the latest iteration of the Snap_Weekly snapshot found at nfsserver.company.com:/ifs/.snapshot/Snap_Weekly-{dates}/company/Userdata directory as SF volume 'sfvol' to location /mnt/sf. Status will be sent to bob@company.com
+This will mount the latest iteration of the Snap_Weekly snapshot found at nfsserver.company.com:/ifs/.snapshot/*Snap_Weekly*/company/Userdata directory as SF volume 'sfvol' to location /mnt/sf. Status will be sent to bob@company.com
+
+$PROG sfvol --host nfsserver.company.com:/qhome/.snapshot --snap Snap_Weekly --path / --email bob@company.com
+This will mount the latest iteration of the Snap_Weekly snapshot found at nfsserver.company.com:/qhome/.snapshot/*Snap_Weekly* directory as SF volume 'sfvol' to location /mnt/sf.
+
 
 EOF
 exit 1
@@ -239,7 +243,7 @@ mount_vol() {
 get_latest_snap() {
   logprint "Getting latest snapshot"
   set +e
-  LATEST_SNAPSHOT="$(ls -lr $LOCAL_MOUNTPATH/$SNAP* | tail -n +1 | head -1 | xargs -n 1 basename)"
+  LATEST_SNAPSHOT="$(ls -lr $LOCAL_MOUNTPATH/*$SNAP* | tail -n +1 | head -1 | xargs -n 1 basename)"
   set -e
   LATEST_SNAPSHOT=${LATEST_SNAPSHOT::-1}
   logprint "Latest snapshot is $LATEST_SNAPSHOT"
