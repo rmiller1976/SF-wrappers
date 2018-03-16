@@ -39,8 +39,8 @@ set -euo pipefail
 #********************************************************
 
 # Set variables
-readonly VERSION="1.0 February 22, 2018"
-PROG="${0##*/}"
+readonly VERSION="1.0 March 16, 2018"
+readonly PROG="${0##*/}"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly SFHOME="${SFHOME:-/opt/starfish}"
 readonly SF=${SFHOME}/bin/client
@@ -60,6 +60,7 @@ LOWMARK=""
 HIGHMARK=""
 PCENTUSED=""
 AGEONLY="0"
+EXCLUDELIST=""
 
 logprint() {
   echo "$(date +%D-%T): $*" >> $LOGFILE
@@ -98,13 +99,12 @@ This script removes old files from a specified SF volume.
 There are two modes of operation: 
   1) Using the --days option without watermarks. In this mode, all data older than the specified value for --days is removed in the specified volume:path.
   2) Using the --days option with watermarks. In this mode, only data older than the specified value for --days is considered for removal in the specified volume:path, subject to the watermark values. Watermarks are based on overall % volume used, even if the SF volume is specified as volume:path 
-
 $PROG <volume> [options] 
 
    -h, --help              - print this help and exit
 
 Required:
-   <volume>	              - Starfish volume to remove data from. Accepts either <volume>, <volume:>, or <volume:path> format
+   <volume>	              - Starfish volume to remove data from. Accepts <volume:path> format
    --email <recipients>	      - Email notifications to <recipients> (comma separated)
 
 Optional:
@@ -114,7 +114,7 @@ Optional:
    --dry-run		      - Do not actually remove data. Useful to see what files would be rmeoved.
    --low <#>		      - Specify a low water mark for % volume used (between 0 and 1000)
    --high <#>		      - Specify a high water mark for % volume used (between 0 and 100)
-
+   --exclude <filename>	      - Specify an exclusion list
 
 Examples:
 $PROG nfs1:/data --dry-run --days 90 --from sysadmin@company.com  --email a@company.com,b@company.com
@@ -165,6 +165,11 @@ parse_input_parameters() {
       shift
       LOWMARK=$1
       ;;
+    "--exclude")
+      check_parameters_value "$@"
+      shift
+      EXCLUDELIST=$1
+      ;;
     *)
       logprint "input parameter: $1 unknown. Exiting.."
       fatal "input parameter: $1 unknown. Exiting.."
@@ -184,14 +189,17 @@ parse_input_parameters() {
     AGEONLY="1"
   else
     if [[ -n "$HIGHMARK" && -n "$LOWMARK" ]]; then
-      logprint "High watermark set to: $HIGHMARK"
-      logprint "Low watermark set to: $LOWMARK"
       logprint "Purging data based on age and watermarks"
+      logprint " High watermark set to: $HIGHMARK"
+      logprint " Low watermark set to: $LOWMARK"
     else
       logprint "Both watermarks must be set if one is set. Exiting.."
       echo "Both watermarks must be set if one is set. Exiting.."
       exit 1
     fi
+  fi
+  if [[ -n $EXCLUDELIST ]]; then
+    logprint " Exclusion list: $EXCLUDELIST"
   fi
   logprint " Volume: $SFVOLUME"
   logprint " Days: $DAYS_AGO"
@@ -217,6 +225,11 @@ run_sf_query() {
   local joboutput
   OLDER_THAN="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
   set +e
+
+#  sf query $SFVOLUME --${MODIFIER}time 19000101-$OLDER_THAN --type f -H -d, --format "volume path fn size ct at mt"
+
+
+
   joboutput="$(${SF} query $SFVOLUME --${MODIFIER}time 19000101-$OLDER_THAN --type f -H > ${FILELIST}-1.tmp)"
   errorcode=$?
   set -e
@@ -235,34 +248,27 @@ run_sf_query() {
 determine_root_volume() {
   local _volume
   _volume=`echo $1 | awk -F: '{print $1}'`
-  echo ${_volume}:
-  logprint "root volume: $_volume"
+  echo ${_volume}
 }
 
 determine_full_mounted_path() {
   local _fullpath
-  _fullpath=`sf volume list --csv --no-headers | grep $1 | awk -F, '{print $2}'`
+  _fullpath=`sf volume list --csv --no-headers | grep ${1:1:-1} | awk -F, '{print $2}'`
   echo ${_fullpath}
-  logprint "full path: $_fullpath"
 }
 
-
-modify_filelist() {
+format_filelist() {
   set +e
   local volume
   local fullpath
-  local cmdtorun
 
 # determine root volume 
-#  volume=`echo $SFVOLUME | awk -F: '{print $1}'`
-#  volume=${volume}:
-#  logprint "root volume: $volume"
-  volume=$(determine_root_volume $SFVOLUME)
-
+  volume=$(determine_root_volume $SFVOLUME):
+  logprint "root volume: $volume"
 
 # determine full mounted path of SF volume
-#  fullpath=`sf volume list --csv --no-headers | grep $volume | awk -F, '{print $2}'`
   fullpath=$(determine_full_mounted_path $volume)
+  logprint "full path: $fullpath"
 
 # remove leading and trailing " characters, and add trailing /
   fullpath=${fullpath:1:-1}
@@ -271,9 +277,22 @@ modify_filelist() {
   
 # replace root SF volume name with fullpath
   `sed -i "s;$volume;$fullpath;g" ${FILELIST}-1.tmp`
+  logprint "Replaced $volume with $fullpath in ${FILELIST}-1.tmp"
+
+# remove exclusions
+  if [[ -n $EXCLUDELIST ]]; then
+    logprint "Removing exclusions specified in $EXCLUDELIST"
+    while read line_from_exclusion_file; do
+      sed -i "\:$line_from_exclusion_file:d" ${FILELIST}-1.tmp 
+    done < $EXCLUDELIST 
+  fi
 
 # change \n at the end of every line to \0 so that SF remove can accept input
+# Temporarily set IFS to pipe (|) so that spaces can be accomodated in filenames.
+  IFS='|'
   `tr '\n' '\0' < ${FILELIST}-1.tmp > ${FILELIST}-2.tmp`
+  logprint "Replaced \n at end of lines with \0"
+  unset IFS
   set -e
 }
 
@@ -306,9 +325,8 @@ determine_percent_full() {
   local cmd_output
   local errorcode
   set +e
-  cmd_output="$(df -h --output=source,pcent | grep $1 | sed 's/ \+/ /g' | cut -f2 -d" " | sed 's/%$//')"
+  cmd_output="$(df -h --output=source,pcent | grep $(determine_root_volume $1) | sed 's/ \+/ /g' | cut -f2 -d" " | sed 's/%$//')"
   errorcode=$?
-  set -e
   if [[ $errorcode -eq 0 ]]; then
     logprint "df command executed"
   else
@@ -317,8 +335,8 @@ determine_percent_full() {
     email_alert "df command execution failure. Exiting.."
     exit 1
   fi
-  PCENTUSED=$cmd_output
-  logprint "Volume $1 percent used: $PCENTUSED"
+  set -e
+  echo $cmd_output
 }
 
 determine_percent() {
@@ -356,19 +374,26 @@ check_mailx_exists
 echo "Step 2 - mailx verified"
 echo "Step 2 Complete"
 if [[ $AGEONLY == "1" ]]; then
+# Run this segment if we are only concerned with removing files older than X days.
   echo "Step 3: Run SF query command"
   run_sf_query
   echo "Step 3 Complete"
-  echo "Step 4: Modify $FILELIST"
-  modify_filelist
+  echo "Step 4: Format ${FILELIST}-1.tmp"
+  format_filelist
   echo "Step 4 Complete"
+else
+# Run this semgnet if we are using watermarks
+  echo "Step 3: Determine volume percent full"
+  PCENTUSED=$(determine_percent_full $SFVOLUME)
+  logprint "Volume $(determine_root_volume $SFVOLUME) percent used: $PCENTUSED"
+  
+
+fi
   echo "Step 5: Build and run job command"
   #build_and_run_job_command
   echo "Step 5 Complete"
   email_notify "Options specified: $SFVOLUME, use ${MODIFIER}time, files older than $DAYS_AGO days old, $DRYRUN"
   echo "Script complete"
-else
-  echo "Step 3: Determine volume percent full"
-  determine_percent_full 
+
 
 
