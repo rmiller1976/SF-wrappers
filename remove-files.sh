@@ -61,6 +61,8 @@ HIGHMARK=""
 PCENTUSED=""
 AGEONLY="0"
 EXCLUDELIST=""
+ONEPERCENT=""
+TOREMOVE=""
 
 logprint() {
   echo "$(date +%D-%T): $*" >> $LOGFILE
@@ -225,13 +227,34 @@ run_sf_query() {
   local joboutput
   OLDER_THAN="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
   set +e
-
-#  sf query $SFVOLUME --${MODIFIER}time 19000101-$OLDER_THAN --type f -H -d, --format "volume path fn size ct at mt"
-
-
-
-  joboutput="$(${SF} query $SFVOLUME --${MODIFIER}time 19000101-$OLDER_THAN --type f -H > ${FILELIST}-1.tmp)"
-  errorcode=$?
+  if [[ $1 = "0" ]]; then
+    local totaltally
+    local size
+    logprint "Processing query based on age and watermarks"
+    joboutput="$(${SF} query $SFVOLUME --${MODIFIER}time 19000101-$OLDER_THAN --type f -H -d, --format "${MODIFIER}t volume path fn size" > ${FILELIST}-raw.tmp)"
+    errorcode=$?
+    logprint "Sorting results based on ${MODIFIER}time"
+    sort ${FILELIST}-raw.tmp > ${FILELIST}-sort.tmp
+#    rm ${FILELIST}-raw.tmp
+    logprint "Removing ${MODIFIER}time values from file"
+    sed 's/^[^,]*,//g' < ${FILELIST}-sort.tmp > ${FILELIST}-sort1.tmp
+    totaltally=0
+    size=0
+    while [[ $totaltally < $TOREMOVE ]]; do
+      size=$(awk -F, '{print $4}' < ${FILELIST}-sort1.tmp | head -n 1)
+      
+      totaltally=$(($totaltally + $size))  
+      echo $totaltally
+    done
+      
+    
+    
+    
+  elif [[ $1 = "1" ]]; then
+    logprint "Processing query based on age only"
+    joboutput="$(${SF} query $SFVOLUME --${MODIFIER}time 19000101-$OLDER_THAN --type f -H > ${FILELIST}-1.tmp)"
+    errorcode=$?
+  fi
   set -e
   if [[ $errorcode -eq 0 ]]; then
     logprint "SF query completed successfully"
@@ -282,6 +305,7 @@ format_filelist() {
 # remove exclusions
   if [[ -n $EXCLUDELIST ]]; then
     logprint "Removing exclusions specified in $EXCLUDELIST"
+    echo "Processing exclusions"
     while read line_from_exclusion_file; do
       sed -i "\:$line_from_exclusion_file:d" ${FILELIST}-1.tmp 
     done < $EXCLUDELIST 
@@ -339,16 +363,15 @@ determine_percent_full() {
   echo $cmd_output
 }
 
-determine_percent() {
+determine_one_percent() {
   local cmd_output
   local errorcode
+  local one_percent
   set +e
-  cmd_output="$(df -h --output=source,size | grep $1 | sed 's/ \+/ /g' | cut -f2 -d" " | sed 's/$//')"
-
-
+  cmd_output="$(df -B1 --output=source,size | grep $(determine_root_volume $1) | sed 's/ \+/ /g' | cut -f2 -d" " | sed 's/$//')"
+  set -e
+  echo $((cmd_output / 100))
 }
-
-
 
 [[ $# -lt 1 ]] && usage "Not enough arguments";
 
@@ -376,17 +399,32 @@ echo "Step 2 Complete"
 if [[ $AGEONLY == "1" ]]; then
 # Run this segment if we are only concerned with removing files older than X days.
   echo "Step 3: Run SF query command"
-  run_sf_query
+  run_sf_query $AGEONLY
   echo "Step 3 Complete"
   echo "Step 4: Format ${FILELIST}-1.tmp"
   format_filelist
   echo "Step 4 Complete"
 else
-# Run this semgnet if we are using watermarks
+# Run this segment if we are using watermarks
   echo "Step 3: Determine volume percent full"
   PCENTUSED=$(determine_percent_full $SFVOLUME)
   logprint "Volume $(determine_root_volume $SFVOLUME) percent used: $PCENTUSED"
-  
+  echo "Step 3 Complete"
+  if [[ $PCENTUSED -gt $HIGHMARK ]]; then
+    ONEPERCENT=$(determine_one_percent $SFVOLUME)
+    TOREMOVE=$(((PCENTUSED - LOWMARK)*ONEPERCENT))
+    logprint "One percent of volume = $ONEPERCENT B. Need to remove $TOREMOVE B"
+    echo "Step 4: Determine files to remove"
+    run_sf_query $AGEONLY
+    
+    
+  else
+    logprint "High watermark not reached - not removing any files. Script exiting.."
+    echo "High watermark not reached - not removing any files.  Script exiting.."
+    exit 1
+  fi
+
+   
 
 fi
   echo "Step 5: Build and run job command"
