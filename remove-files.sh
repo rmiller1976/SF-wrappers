@@ -39,7 +39,7 @@ set -euo pipefail
 #********************************************************
 
 # Set variables
-readonly VERSION="1.0 March 21, 2018"
+readonly VERSION="1.0 March 26, 2018"
 readonly PROG="${0##*/}"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly SFHOME="${SFHOME:-/opt/starfish}"
@@ -224,7 +224,7 @@ check_mailx_exists() {
 }
 
 remove_exclusions() {
-  logprint "Removing exclusions specified in $1 from $2"
+  logprint " Removing exclusions specified in $1 from $2"
   while read line_from_exclusion_file; do
     sed -i "\:$line_from_exclusion_file:d" $2
   done < $1
@@ -233,67 +233,48 @@ remove_exclusions() {
 format_json_output() {
   local volume
   local fullpath
+# Determine volume name
   volume=`head -n 1 < $1 | awk -F, '{print $1}'`
-  logprint "root volume: $volume"
+  logprint "  root volume: $volume"
+# Determine full path of files
   fullpath=`sf volume list --csv --no-headers | grep $volume | awk -F, '{print $2}'`
-  logprint "full path: $fullpath"
+  logprint "  full path: $fullpath"
+# Remove leading and trailing "
   fullpath=${fullpath:1:-1}
-  logprint "full mounted path: $fullpath"
+  logprint "  full mounted path: $fullpath"
   sed -i "s;$volume;$fullpath;g" $1
-  logprint "Replaced $volume with $fullpath in $1"
-  tr ',' '/' < $1 > ${FILELIST}-formatted.tmp
-  logprint "Copied contents of $1 to ${FILELIST}-formatted.tmp and converted commas"
+  logprint "  Replaced $volume with $fullpath in $1"
+  awk -F, '{print $1"/"$2"/"$3","$4}' < $1 > $2
 } 
 
-
-
+tally_size() {
+  local totaltally
+  local size
+  totaltally=0
+  size=0
+  set +e
+  while [[ $totaltally -lt $TOREMOVE && (-s $1) ]]; do
+# Obtain size of next file from input file ($1)
+    size=$(awk -F, '{print $2}' < $1 | head -n 1)
+# Copy top line from input file ($1) to tmp output file, and remove line from input file ($1)
+    head -1 $1 >> ${FILELIST}-tally.tmp && sed -i '1,1d' $1
+# Copy volume, path, and fn from tmp file, and print to output file ($2) 
+    awk -F, '{print $1}' < ${FILELIST}-tally.tmp > $2 
+    totaltally=$(($totaltally + $size))  
+  done
+# Remove tally tmp file
+  rm ${FILELIST}-tally.tmp
+  logprint "Total data being send to job engine for deletion: $totaltally Bytes"
+set -e
+}
 
 run_sf_query() {
-# passing in $AGEONLY
   local errorcode
   local joboutput
   OLDER_THAN="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
   set +e
-  if [[ $1 = "0" ]]; then
-    local totaltally
-    local size
-    logprint "Processing query based on age and watermarks"
-    joboutput="$(${SF} query $SFVOLUME --${MODIFIER}time 19000101-$OLDER_THAN --type f -H -d, --format "${MODIFIER}t volume path fn size" > ${FILELIST}-raw.tmp)"
-    errorcode=$?
-    logprint "Sorting results based on ${MODIFIER}time"
-    sort ${FILELIST}-raw.tmp > ${FILELIST}-sorted.tmp
-#    rm ${FILELIST}-raw.tmp
-    logprint "Removing ${MODIFIER}time values from file"
-    sed 's/^[^,]*,//g' < ${FILELIST}-sorted.tmp > ${FILELIST}-sortednotime.tmp
-    format_json_output ${FILELIST}-sortednotime.tmp
-    if [[ -n $EXCLUDELIST ]]; then
-      remove_exclusions $EXCLUDELIST ${FILELIST}-formatted.tmp
-    fi 
-    totaltally=0
-    size=0
-    while [[ ($totaltally -lt $TOREMOVE) && (-s ${FILELIST}-formatted.tmp) ]]; do
-      size=$(awk -F, '{print $4}' < ${FILELIST}-formatted.tmp | head -n 1)
-      head -1 ${FILELIST}-formatted.tmp >> ${FILELIST}-filestoremove.tmp && sed -i '1,1d' ${FILELIST}-formatted.tmp
-      awk -F, '{print $1":"$2"/"$3}' < ${FILELIST}-filestoremove.tmp > ${FILELIST}-.tmp 
-      totaltally=$(($totaltally + $size))  
-    done
-  elif [[ $1 = "1" ]]; then
-    logprint "Processing query based on age only"
-    joboutput="$(${SF} query $SFVOLUME --${MODIFIER}time 19000101-$OLDER_THAN --type f -H -d, --format "volume path fn"> ${FILELIST}-raw.tmp)"
-    errorcode=$?
-    format_json_output ${FILELIST}-raw.tmp
-    if [[ -n $EXCLUDELIST ]]; then
-      remove_exclusions $EXCLUDELIST ${FILELIST}-formatted.tmp
-    fi
-exit 1
-# change \n at the end of every line to \0 so that SF remove can accept input
-# Temporarily set IFS to pipe (|) so that spaces can be accomodated in filenames.
-    IFS='|'
-    `tr '\n' '\0' < ${FILELIST}-formatted.tmp > ${FILELIST}-final.tmp`
-    logprint "Replaced \n at end of lines with \0"
-    unset IFS
-    set -e
-  fi
+  joboutput="$(${SF} query $SFVOLUME --${MODIFIER}time 19000101-$OLDER_THAN --type f -H -d, --format "${MODIFIER}t volume path fn size" > ${FILELIST}-raw.tmp)"
+  errorcode=$?
   set -e
   if [[ $errorcode -eq 0 ]]; then
     logprint "SF query completed successfully"
@@ -307,53 +288,44 @@ exit 1
   fi
 }
 
+format_results() {
+# passing in $AGEONLY
+  logprint "Formatting results:"
+  logprint " Sorting results"
+  sort ${FILELIST}-raw.tmp > ${FILELIST}-1-sorted.tmp
+#  rm ${FILELIST}-raw.tmp
+  logprint " Removing ${MODIFIER}time values from file"
+  sed 's/^[^,]*,//g' < ${FILELIST}-1-sorted.tmp > ${FILELIST}-2-notime.tmp
+# format json output converts from json output ("vol","path","fn") to something we can almost use (/volume/path/fn,size)
+  logprint " Formatting JSON output:"
+  format_json_output ${FILELIST}-2-notime.tmp ${FILELIST}-3-formatted.tmp
+#remove exclusions
+  if [[ -n $EXCLUDELIST ]]; then
+    remove_exclusions $EXCLUDELIST ${FILELIST}-3-formatted.tmp
+  fi
+# Determine whether further processing is based on age, or age + watermarks
+  if [[ $1 = "0" ]]; then
+    logprint "Processing query based on age and watermarks"
+  elif [[ $1 = "1" ]]; then
+    logprint "Processing query based on age only:"
+# set $TOREMOVE to very large value (1 Pb) since we don't have a limit when removing by age only
+    TOREMOVE=1000000000000000
+  fi
+# tally_size {inputfile} {outputfile} returns output file in /volume/path/fn format
+  tally_size ${FILELIST}-3-formatted.tmp ${FILELIST}-4-tallied.tmp
+# change \n at the end of every line to \0 so that SF remove can accept input
+# Temporarily set IFS to pipe (|) so that spaces can be accomodated in filenames.
+  IFS='|'
+  tr '\n' '\0' < ${FILELIST}-4-tallied.tmp > ${FILELIST}-5-final.tmp
+  logprint "Replaced \n at end of lines with \0"
+  unset IFS
+}
+
 determine_root_volume() {
   local _volume
   _volume=`echo $1 | awk -F: '{print $1}'`
   echo ${_volume}
 }
-
-#determine_full_mounted_path() {
-#  local _fullpath
-#  _fullpath=`sf volume list --csv --no-headers | grep ${1:1:-1} | awk -F, '{print $2}'`
-#  echo ${_fullpath}
-#}
-
-#format_filelist() {
-#  set +e
-#  local volume
-#  local fullpath
-
-# determine root volume 
-#  volume=$(determine_root_volume $SFVOLUME):
-#  logprint "root volume: $volume"
-
-# determine full mounted path of SF volume
-#  fullpath=$(determine_full_mounted_path $volume)
-#  logprint "full path: $fullpath"
-
-# remove leading and trailing " characters, and add trailing /
-#  fullpath=${fullpath:1:-1}
-#  fullpath=${fullpath}/
-#  logprint "full mounted path: $fullpath"
-  
-# replace root SF volume name with fullpath
-#  `sed -i "s;$volume;$fullpath;g" ${FILELIST}-1.tmp`
-#  logprint "Replaced $volume with $fullpath in ${FILELIST}-1.tmp"
-
-# remove exclusions
-#  if [[ -n $EXCLUDELIST ]]; then
-#    remove_exclusions $EXCLUDELIST ${FILELIST}-1.tmp
-#  fi
-
-# change \n at the end of every line to \0 so that SF remove can accept input
-# Temporarily set IFS to pipe (|) so that spaces can be accomodated in filenames.
-#  IFS='|'
-#  `tr '\n' '\0' < ${FILELIST}-1.tmp > ${FILELIST}-2.tmp`
-#  logprint "Replaced \n at end of lines with \0"
-#  unset IFS
-#  set -e
-#}
 
 build_and_run_job_command() {
   local errorcode
@@ -362,7 +334,7 @@ build_and_run_job_command() {
   OLDER_THAN="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
   set +e
   logprint "Starting SF job engine"
-  joboutput="$(${SF} job start "${SFREMOVE} --from-file ${FILELIST}-final.tmp ${DRYRUN}" "$SFVOLUME" --from-scratch --no-entry-verification --wait 2>&1 | sed -n 1p)"
+  joboutput="$(${SF} job start "${SFREMOVE} --from-file $1 ${DRYRUN}" "$SFVOLUME" --from-scratch --no-entry-verification --wait 2>&1 | sed -n 1p)"
   errorcode=$?
   set -e
   jobid=`echo "$joboutput" | awk '{print substr($0,length($0)-11,4)}'`
@@ -431,38 +403,29 @@ echo "Step 2: Verify prereq's (mailx)"
 check_mailx_exists
 echo "Step 2 - mailx verified"
 echo "Step 2 Complete"
-if [[ $AGEONLY == "1" ]]; then
-# Run this segment if we are only concerned with removing files older than X days.
-  echo "Step 3: Run SF query command"
-  run_sf_query $AGEONLY
-  echo "Step 3 Complete"
-#  echo "Step 4: Format ${FILELIST}-1.tmp"
-#  format_filelist
-#  echo "Step 4 Complete"
-else
-# Run this segment if we are using watermarks
-  echo "Step 3: Determine volume percent full"
+echo "Step 3: Run SF query command"
+run_sf_query 
+if [[ $AGEONLY == "0" ]]; then
+  echo "Step 3b: Determine volume percent full"
   PCENTUSED=$(determine_percent_full $SFVOLUME)
   logprint "Volume $(determine_root_volume $SFVOLUME) percent used: $PCENTUSED"
-  echo "Step 3 Complete"
+  echo "Step 3b Complete"
   if [[ $PCENTUSED -gt $HIGHMARK ]]; then
     ONEPERCENT=$(determine_one_percent $SFVOLUME)
     TOREMOVE=$(((PCENTUSED - LOWMARK)*ONEPERCENT))
     logprint "One percent of volume = $ONEPERCENT B. Need to remove $TOREMOVE B"
-    echo "Step 4a: Determine files to remove"
-    run_sf_query $AGEONLY
-    echo "Step 4a Complete"
-    echo "Step 4b: Format ${FILELIST}-1.tmp"
-    format_filelist 
-    echo "Step 4b Complete"    
   else
     logprint "High watermark not reached - not removing any files. Script exiting.."
     echo "High watermark not reached - not removing any files.  Script exiting.."
     exit 1
   fi
 fi
+echo "Step 3 Complete"
+echo "Step 4: Format Results"
+format_results $AGEONLY
+echo "Step 4 Complete"
 echo "Step 5: Build and run job command"
-build_and_run_job_command
+#build_and_run_job_command ${FILELIST}-5-final.tmp
 echo "Step 5 Complete"
 email_notify "Options specified: $SFVOLUME, use ${MODIFIER}time, files older than $DAYS_AGO days old, $DRYRUN"
 echo "Script complete"
