@@ -253,7 +253,7 @@ tally_size() {
   totaltally=0
   size=0
   set +e
-  while [[ $totaltally -lt $TOREMOVE && (-s $1) ]]; do
+  while [[ ($totaltally -lt $TOREMOVE) && (-s $1) ]]; do
 # Obtain size of next file from input file ($1)
     size=$(awk -F, '{print $2}' < $1 | head -n 1)
 # Copy top line from input file ($1) to tmp output file, and remove line from input file ($1)
