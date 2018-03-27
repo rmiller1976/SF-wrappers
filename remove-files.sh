@@ -38,8 +38,14 @@ set -euo pipefail
 #
 #********************************************************
 
+# Change Log
+# 1.0 (March 26, 2018) - Original version
+# 1.01 (March 27, 2018) - Update tally_size to use awk instead of sed -i
+#                       - Add info to final email including where to find files fed to SF job engine,
+#                         and how much data was deleted
+
 # Set variables
-readonly VERSION="1.0 March 26, 2018"
+readonly VERSION="1.01 March 27, 2018"
 readonly PROG="${0##*/}"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly SFHOME="${SFHOME:-/opt/starfish}"
@@ -115,7 +121,7 @@ Optional:
    --from <sender>	      - Email sender (default: root)
    --mtime		      - Use mtime (default is atime)
    --dry-run		      - Do not actually remove data. Useful to see what files would be rmeoved.
-   --low <#>		      - Specify a low water mark for % volume used (between 0 and 1000)
+   --low <#>		      - Specify a low water mark for % volume used (between 0 and 100)
    --high <#>		      - Specify a high water mark for % volume used (between 0 and 100)
    --exclude <filename>	      - Specify an exclusion list
 
@@ -252,20 +258,14 @@ tally_size() {
   local size
   totaltally=0
   size=0
-  set +e
-  while [[ ($totaltally -lt $TOREMOVE) && (-s $1) ]]; do
-# Obtain size of next file from input file ($1)
-    size=$(awk -F, '{print $2}' < $1 | head -n 1)
-# Copy top line from input file ($1) to tmp output file, and remove line from input file ($1)
-    head -1 $1 >> ${FILELIST}-tally.tmp && sed -i '1,1d' $1
-# Copy volume, path, and fn from tmp file, and print to output file ($2) 
-    awk -F, '{print $1}' < ${FILELIST}-tally.tmp > $2 
-    totaltally=$(($totaltally + $size))  
-  done
-# Remove tally tmp file
-  rm ${FILELIST}-tally.tmp
-  logprint "Total data being send to job engine for deletion: $totaltally Bytes"
-set -e
+#  set +e
+  awk -v amounttodelete="$TOREMOVE" -F, '\
+    BEGIN { rollingtally=0 }
+    { if (rollingtally < amounttodelete) { rollingtally=rollingtally+$2;print $1 } }
+    END { print rollingtally }
+    ' $1 > $2
+  totaltally=`tail -n 1 $2 | tee >(wc -c | xargs -I {} truncate $2 -s -{})`
+  logprint "Total data being sent to job engine for deletion: $totaltally Bytes"
 }
 
 run_sf_query() {
@@ -410,7 +410,7 @@ if [[ $AGEONLY == "0" ]]; then
   PCENTUSED=$(determine_percent_full $SFVOLUME)
   logprint "Volume $(determine_root_volume $SFVOLUME) percent used: $PCENTUSED"
   echo "Step 3b Complete"
-  if [[ $PCENTUSED -gt $HIGHMARK ]]; then
+  if [[ $PCENTUSED -ge $HIGHMARK ]]; then
     ONEPERCENT=$(determine_one_percent $SFVOLUME)
     TOREMOVE=$(((PCENTUSED - LOWMARK)*ONEPERCENT))
     logprint "One percent of volume = $ONEPERCENT B. Need to remove $TOREMOVE B"
@@ -425,11 +425,10 @@ echo "Step 4: Format Results"
 format_results $AGEONLY
 echo "Step 4 Complete"
 echo "Step 5: Build and run job command"
-#build_and_run_job_command ${FILELIST}-5-final.tmp
+build_and_run_job_command ${FILELIST}-5-final.tmp
 echo "Step 5 Complete"
-email_notify "Options specified: $SFVOLUME, use ${MODIFIER}time, files older than $DAYS_AGO days old, $DRYRUN"
+email_notify "Options specified: $SFVOLUME, use ${MODIFIER}time, files older than $DAYS_AGO days old, $DRYRUN
+A list of files sent to the SF job engine for deletion can be found at ${FILELIST}-5-final.tmp (${FILELIST}-4-tallied.tmp for a more human readable version)"
 echo "Script complete"
 echo "NOTE: A new SF scan should be run prior to running this script again!"
-
-
 
