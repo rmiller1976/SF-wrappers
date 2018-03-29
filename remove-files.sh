@@ -43,9 +43,13 @@ set -euo pipefail
 # 1.01 (March 27, 2018) - Update tally_size to use awk instead of sed -i
 #                       - Add info to final email including where to find files fed to SF job engine,
 #                         and how much data was deleted
+# 1.02 (March XX, 2018) - Update usage
+#                       - Add more comments into script
+#                       - Add ability to use latest of a/c/mtime 
+#                       - Add check that sf query -raw.tmp file has data
 
 # Set variables
-readonly VERSION="1.01 March 27, 2018"
+readonly VERSION="1.02inpro March 28, 2018"
 readonly PROG="${0##*/}"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly SFHOME="${SFHOME:-/opt/starfish}"
@@ -60,7 +64,7 @@ SFVOLUME=""
 EMAIL=""
 EMAILFROM=root
 DRYRUN=""
-MODIFIER="a"
+MODIFIER="amc"
 DAYS_AGO="365"
 LOWMARK=""
 HIGHMARK=""
@@ -68,7 +72,8 @@ PCENTUSED=""
 AGEONLY="0"
 EXCLUDELIST=""
 ONEPERCENT=""
-TOREMOVE=""
+# Set TOREMOVE to 10 Pb
+TOREMOVE="10000000000000000"
 
 logprint() {
   echo "$(date +%D-%T): $*" >> $LOGFILE
@@ -105,7 +110,7 @@ $VERSION
 
 This script removes old files from a specified SF volume. 
 There are two modes of operation: 
-  1) Using the --days option without watermarks. In this mode, all data older than the specified value for --days is removed in the specified volume:path.
+  1) Using the --days option without watermarks. In this mode, all data older than the specified value for --days is removed in the specified volume:path. Up to a maximum of $TOREMOVE bytes of data will be removed.
   2) Using the --days option with watermarks. In this mode, only data older than the specified value for --days is considered for removal in the specified volume:path, subject to the watermark values. Watermarks are based on overall % volume used, even if the SF volume is specified as volume:path 
 
 $PROG <volume> [options] 
@@ -119,17 +124,19 @@ Required:
 Optional:
    --days		      - Remove data older than X days (Default 365)
    --from <sender>	      - Email sender (default: root)
-   --mtime		      - Use mtime (default is atime)
+   --atime                    - Use only atime (default is latest of a/m/ctime)
+   --mtime		      - Use only mtime (default is latest of a/m/ctime)
+   --ctime                    - Use only ctime (default is latest of a/m/ctime)
    --dry-run		      - Do not actually remove data. Useful to see what files would be rmeoved.
    --low <#>		      - Specify a low water mark for % volume used (between 0 and 100)
    --high <#>		      - Specify a high water mark for % volume used (between 0 and 100)
-   --exclude <filename>	      - Specify an exclusion list
+   --exclude <filename>	      - Specify an exclusion list (Uses simple pattern matching, and this file should have no empty lines)
 
 Examples:
-$PROG nfs1:/data --dry-run --days 90 --from sysadmin@company.com  --email a@company.com,b@company.com
-Run $PROG for SF volume nfs1:/data, in dry run mode, looking to remove files older than 90 days.  Email results to users a@company.com and b@company.com, coming from sysadmin@company.com
+$PROG nfs1:/data/project1 --dry-run --days 90 --from sysadmin@company.com  --email a@company.com,b@company.com
+Run $PROG for SF volume nfs1:/data/project1, in dry run mode, looking to remove files older than 90 days.  Email results to users a@company.com and b@company.com, coming from sysadmin@company.com
 
-$PROG nfs1:/data --days 90 --low 80 --high 85 --email a@company.com --mtime
+$PROG nfs1: --days 90 --low 80 --high 85 --email a@company.com --mtime 
 Run $PROG for SF volume nfs1, removing data based on mtime from nfs1:/data that is at least 90 days old, so long as the volume is at least 85% full. Remove data until volume is down to 80% full. Email notifications to a@company.com
 
 EOF
@@ -164,6 +171,12 @@ parse_input_parameters() {
     "--mtime")
       MODIFIER="m"
       ;;      
+    "--ctime")
+      MODIFIER="c"
+      ;;
+    "--atime")
+      MODIFIER="a"
+      ;;
     "--high")
       check_parameters_value "$@"
       shift
@@ -212,7 +225,7 @@ parse_input_parameters() {
   fi
   logprint " Volume: $SFVOLUME"
   logprint " Days: $DAYS_AGO"
-  logprint " a/mtime: $MODIFIER"
+  logprint " a/m/ctime: $MODIFIER"
   logprint " Email From: $EMAILFROM"
   logprint " Email: $EMAIL"
   [[ -z $DRYRUN ]] || logprint " Dry run: $DRYRUN"
@@ -271,9 +284,28 @@ tally_size() {
 run_sf_query() {
   local errorcode
   local joboutput
-  OLDER_THAN="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
+  local timeframe
+  local older_than
+  older_than="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
+  case $MODIFIER in
+    "m")
+      timeframe="--mtime 19000101-$older_than"
+      ;;
+    "a")
+      timeframe="--atime 19000101-$older_than"
+      ;;
+    "c")
+      timeframe="--ctime 19000101-$older_than"
+      ;;
+    "amc")
+      timeframe="--atime 19000101-$older_than --mtime 19000101-$older_than --ctime 19000101-$older_than"
+      ;;
+    "*")
+      echo "Value for a/m/ctime unknown. Exiting.."
+      ;;
+  esac
   set +e
-  joboutput="$(${SF} query $SFVOLUME --${MODIFIER}time 19000101-$OLDER_THAN --type f -H -d, --format "${MODIFIER}t volume path fn size" > ${FILELIST}-raw.tmp)"
+  joboutput="$(${SF} query $SFVOLUME $timeframe --type f -H -d, --format "at mt ct volume path fn size" > ${FILELIST}-raw.tmp)"
   errorcode=$?
   set -e
   if [[ $errorcode -eq 0 ]]; then
@@ -291,7 +323,26 @@ run_sf_query() {
 format_results() {
 # passing in $AGEONLY
   logprint "Formatting results:"
+  logprint " Finding
   logprint " Sorting results"
+  case $MODIFIER in
+    "m")
+      sort -k2 -n ${FILELIST}-raw.tmp > ${FILELIST}-1-sorted.tmp
+      ;;
+    "a")
+      sort -k1 -n ${FILELIST}-raw.tmp > ${FILELIST}-1-sorted.tmp
+      ;;
+    "c")
+      sort -k3 -n ${FILELIST}-raw.tmp > ${FILELIST}-1-sorted.tmp
+      ;;
+    "amc)
+      awk -F, ' 
+
+
+
+
+
+
   sort ${FILELIST}-raw.tmp > ${FILELIST}-1-sorted.tmp
 #  rm ${FILELIST}-raw.tmp
   logprint " Removing ${MODIFIER}time values from file"
@@ -308,8 +359,6 @@ format_results() {
     logprint "Processing query based on age and watermarks"
   elif [[ $1 = "1" ]]; then
     logprint "Processing query based on age only:"
-# set $TOREMOVE to very large value (1 Pb) since we don't have a limit when removing by age only
-    TOREMOVE=1000000000000000
   fi
 # tally_size {inputfile} {outputfile} returns output file in /volume/path/fn format
   tally_size ${FILELIST}-3-formatted.tmp ${FILELIST}-4-tallied.tmp
@@ -331,7 +380,6 @@ build_and_run_job_command() {
   local errorcode
   local joboutput
   local jobid
-  OLDER_THAN="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
   set +e
   logprint "Starting SF job engine"
   joboutput="$(${SF} job start "${SFREMOVE} --from-file $1 ${DRYRUN}" "$SFVOLUME" --from-scratch --no-entry-verification --wait 2>&1 | sed -n 1p)"
