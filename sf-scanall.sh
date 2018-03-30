@@ -38,8 +38,12 @@ set -euo pipefail
 #
 #********************************************************
 
+# Change Log
+# v1.01 March 29, 2018 - Add ability to continue when it senses failed scans
+#                      - Report list of failed volumes
+
 # Set variables
-readonly VERSION="1.0 February 23, 2018"
+readonly VERSION="1.01 March 29, 2018"
 readonly PROG="${0##*/}"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly SFHOME="${SFHOME:-/opt/starfish}"
@@ -62,7 +66,7 @@ TARGETDIFF=""
 NUMDIFF=""
 
 logprint() {
-  echo "$(date +%D-%T): $*" >> $LOGFILE
+  echo -e "$(date +%D-%T): $*" >> $LOGFILE
 }
 
 email_alert() {
@@ -208,7 +212,7 @@ determine_scan_list() {
           done
       fi
       if [[ ${addvolume} -eq 1 ]]; then
-        SFVOLUMES+=($volume)
+        SFVOLUMES+="($volume)\n"
       fi
     done
   logprint "List of volumes to be scanned: ${SFVOLUMES[@]}"
@@ -241,14 +245,14 @@ initiate_scans() {
   logprint "NUMMTIME: $NUMMTIME"
   if [ $NUMMTIME -gt 0 ] ; then
     logprint "starting mtime scans on $NUMMTIME volumes"
-    echo $TARGETMTIME | xargs  -n1 -P $PARALLEL ${SF} scan start -t mtime --wait &>> $LOGFILE
+#    echo $TARGETMTIME | xargs  -n1 -P $PARALLEL ${SF} scan start -t mtime --wait &>> $LOGFILE
   fi
 
   NUMDIFF=`echo $TARGETDIFF | wc -w`
   logprint "NUMDIFF: $NUMDIFF"
-  logprint "Starting diff scans on $NUMDIFF volumes"
   if [ $NUMDIFF -gt 0 ] ; then
-    echo $TARGETDIFF | xargs  -n1 -P $PARALLEL ${SF} scan start -t diff --wait &>> $LOGFILE
+     logprint "Starting diff scans on $NUMDIFF volumes"
+#    echo $TARGETDIFF | xargs  -n1 -P $PARALLEL ${SF} scan start -t diff --wait &>> $LOGFILE
   fi
   logprint "Scans complete"
 }
