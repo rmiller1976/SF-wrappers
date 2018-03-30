@@ -39,11 +39,11 @@ set -euo pipefail
 #********************************************************
 
 # Change Log
-# v1.01 March 29, 2018 - Add ability to continue when it senses failed scans
-#                      - Report list of failed volumes
+# v1.01 March 30, 2018 - Add ability to continue when it senses failed scans
+#                      - Consolidate reporting of failed volumes
 
 # Set variables
-readonly VERSION="1.01 March 29, 2018"
+readonly VERSION="1.01 March 30, 2018"
 readonly PROG="${0##*/}"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly SFHOME="${SFHOME:-/opt/starfish}"
@@ -60,6 +60,7 @@ TARGETSCAN="diff"
 EMAIL=""
 EMAILFROM=root
 EXCL_LIST=()
+SKIP_LIST=()
 TARGETMTIME=""
 NUMMTIME=""
 TARGETDIFF=""
@@ -212,7 +213,7 @@ determine_scan_list() {
           done
       fi
       if [[ ${addvolume} -eq 1 ]]; then
-        SFVOLUMES+="($volume)\n"
+        SFVOLUMES+=($volume)
       fi
     done
   logprint "List of volumes to be scanned: ${SFVOLUMES[@]}"
@@ -230,14 +231,14 @@ last_scan() {
         if  [[ "${scantype}" = "diff" ]]; then
       	  TARGETMTIME+=$volume" "
         elif [[ "${scantype}" = "" ]]; then
-          logprint "Failed scan for $volume detected. Volume will be skipped. Either modify the --mtime value, or manually initiate a scan outside of this script. Other volumes will be scanned."
-          email_alert "Failed scan for $volume detected. Volume will be skipped. Either modify the --mtime value, or manually initiate a scan outside of the sf-scanall script. Other volumes will be scanned."
+          SKIP_LIST+=($volume)
         else
           TARGETDIFF+=$volume" "
         fi
     done
-  logprint "volumes for mtime scan: $TARGETMTIME"
-  logprint "volumes for diff scan: $TARGETDIFF"
+  logprint "List of volumes with failed scans detected that will be skipped: ${SKIP_LIST[@]}"
+  logprint "Volumes for mtime scan: $TARGETMTIME"
+  logprint "Volumes for diff scan: $TARGETDIFF"
 }
 
 initiate_scans() {
@@ -245,14 +246,14 @@ initiate_scans() {
   logprint "NUMMTIME: $NUMMTIME"
   if [ $NUMMTIME -gt 0 ] ; then
     logprint "starting mtime scans on $NUMMTIME volumes"
-#    echo $TARGETMTIME | xargs  -n1 -P $PARALLEL ${SF} scan start -t mtime --wait &>> $LOGFILE
+    echo $TARGETMTIME | xargs  -n1 -P $PARALLEL ${SF} scan start -t mtime --wait &>> $LOGFILE
   fi
 
   NUMDIFF=`echo $TARGETDIFF | wc -w`
   logprint "NUMDIFF: $NUMDIFF"
   if [ $NUMDIFF -gt 0 ] ; then
      logprint "Starting diff scans on $NUMDIFF volumes"
-#    echo $TARGETDIFF | xargs  -n1 -P $PARALLEL ${SF} scan start -t diff --wait &>> $LOGFILE
+    echo $TARGETDIFF | xargs  -n1 -P $PARALLEL ${SF} scan start -t diff --wait &>> $LOGFILE
   fi
   logprint "Scans complete"
 }
