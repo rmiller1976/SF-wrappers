@@ -1,0 +1,207 @@
+#!/bin/bash
+
+# This script installs datadog, the Datadog postgres integration, sets up
+# nfsstat tests into datadog, and integrates custom multi-core CPU testing
+
+trap "echo [0m" 1 2 3 11 15
+
+LOGFILE=/tmp/ddinstall.log
+
+export DD_API_KEY=6448339284657b30a3c183caf94da0de
+pg_dest=`grep pg_uri /opt/starfish/etc//99-local.ini | awk 'BEGIN {FS="[@/]+"}; {print $3;}'`
+pg_ip=`echo $pg_dest | awk -F: '{print $1}'`
+pg_port=`echo $pg_dest | awk -F: '{print $2}'`
+
+
+if [ $# -ne 1 ]; then
+	echo "error: must include site name as argument"
+	exit 1
+else
+	site=$1
+fi
+echo "Installing use site name '$site'"
+
+echo "this will install Datadog packages, as well as the following supplemental packages:"
+echo " nfs-utils (for nfsiostat from standard repo)"
+echo " pip install datadog"
+echo ""
+echo "note: this will add or change Datadog global tags to be solely the site name"
+echo ""
+echo "[1mPress 'y' and enter to continue[0m or any other key to abort. If you abort, contact"
+echo "starfish support for alternatives"
+
+read yes
+
+if [ "$yes" != "y" ]; then
+	echo "aborting"
+	exit 0
+fi
+
+# start a log file
+uname -a > $LOGFILE
+
+# put everything in logfile from here on out
+exec &> >(tee -a "$LOGFILE")
+
+if [ -f /etc/redhat-release ]; then
+	installer="yum install --assumeyes"
+	pkgchk="rpm -ql"
+	$pkgchk datadog-agent > /dev/null 2>&1
+	if [ $? -ne 0 ]; then
+		# install base package
+		bash -c "$(curl -L https://raw.githubusercontent.com/DataDog/datadog-agent/master/cmd/agent/install_script.sh)"
+	fi
+	# check/fix global tags
+	if [ -f /etc/dd-agent/datadog.conf ]; then
+		# add/fix site tag
+		sed --in-place=.bak -re "/^# tags:.*$/s//tags: site:$site/" /etc/dd-agent/datadog.conf
+	fi
+	if [ -f /etc/datadog-agent/datadog.yaml ]; then
+		# add/fix site tag
+		sed --in-place=.bak -re "/^# tags:$/s//tags:\n  - site:$site/" /etc/datadog-agent/datadog.yaml
+		sed --in-place=.bak -re "/^  - site:.*$/s//  - site:$site/" /etc/datadog-agent/datadog.yaml
+	fi
+	# update nfsiostat
+	if [ -d /etc/dd-agent ]; then
+		cd /etc/dd-agent/conf.d
+		echo "updating nfsiostat integration..." 
+		sed -e '/nfsiostat_path/a\ \ nfsiostat_path: /usr/sbin/nfsiostat' nfsstat.yaml.example > nfsstat.yaml
+		echo "updating postgres integration..."
+		sed -e '/password/a\ \ \ \ username: datadog\n    password: X83FGVReB5DJmbCSIShu1x8L' postgres.yaml.example | sed -e "s/host: localhost/host: $pg_ip/" > postgres.yaml
+
+	else
+		cd /etc/datadog-agent/conf.d/nfsstat.d
+		echo "updating nfsiostat integration..." 
+		sed -e '/nfsiostat_path/a\ \ nfsiostat_path: /usr/sbin/nfsiostat' conf.yaml.example > conf.yaml
+		cd /etc/datadog-agent/conf.d/postgres.d
+		echo "updating postgres integration..."
+		sed -e '/password/a\ \ \ \ username: datadog\n    password: X83FGVReB5DJmbCSIShu1x8L' conf.yaml.example | sed -e "s/host: localhost/host: $pg_ip/" > conf.yaml
+	fi
+	# install optional included services
+	if [ -d /etc/datadog-agent -a ! -f /etc/datadog-agent/conf.g/uptime.d/conf.yaml ]; then
+		echo Including Datadog Uptime services integration...
+		cp /etc/datadog-agent/conf.d/uptime.d/conf.yaml.default /etc/datadog-agent/conf.d/uptime.d/conf.yaml
+	fi
+	if [ -d /etc/datadog-agent -a ! -f /etc/datadog-agent/conf.d/system_core.d/conf.yaml ]; then
+		echo Including Datadog System_core for per-core stats ...
+		cp /etc/datadog-agent/conf.d/system_core.d/conf.yaml.example /etc/datadog-agent/conf.d/system_core.d/conf.yaml
+	fi
+	if [ -d /etc/datadog-agent -a ! -f /etc/datadog-agent/conf.d/system_swap.d/conf.yaml ]; then
+		echo Including Datadog System_swap integration...
+		cp /etc/datadog-agent/conf.d/system_swap.d/conf.yaml.example /etc/datadog-agent/conf.d/system_swap.d/conf.yaml
+	fi
+	if [ -d /etc/datadog-agent -a ! -f /etc/datadog-agent/conf.d/memory.d/conf.yaml ]; then
+		echo Including Datadog memory integration...
+		cp /etc/datadog-agent/conf.d/memory.d/conf.yaml.default /etc/datadog-agent/conf.d/memory.d/conf.yaml
+	fi
+	if [ -d /etc/datadog-agent -a ! -f /etc/datadog-agent/conf.d/process.d/conf.yaml ]; then
+		echo Including Datadog Process extras...
+		cp /etc/datadog-agent/conf.d/process.d/conf.yaml.example /etc/datadog-agent/conf.d/process.d/conf.yaml
+		
+		cat >> /etc/datadog-agent/conf.d/process.d/conf.yaml <<EOF
+  - name: postgres
+    search_string: ['postgres']
+    ignore_denied_access: True
+
+  - name: _sfcrawler
+    search_string: ['_sfcrawler']
+    ignore_denied_access: True
+
+  - name: _sf_lustre
+    search_string: ['_sflustre_event_mon']
+    ignore_denied_access: True
+EOF
+
+
+	fi
+	if [ -d /etc/datadog-agent -a ! -f /etc/datadog-agent/conf.d/disk.d/conf.yaml ]; then
+		echo Including Datadog extra disk monitoring integration...
+		sed -e 's/mount: no/mount: yes/' /etc/datadog-agent/conf.d/disk.d/conf.yaml.default > /etc/datadog-agent/conf.d/disk.d/conf.yaml
+	fi
+
+else
+	installer="apt-get install"
+	pkgchk="dpkg -i"
+	"Debian/Ubuntu not supported yet. Please email Starfish contact for assitance"
+	exit 0
+fi
+
+# for safety in sub-process (e.g. psql), chdir
+cd /
+
+pydog=$(pip list 2>/dev/null | grep -c datadog)
+if [ $pydog -eq 0 ]; then
+	echo "installing datadog Python integration via pip"
+	pip install datadog 2>&1 
+
+	echo "done..." 
+else 
+	echo "Python datadog integration already installed. Skipping..." 
+fi
+
+$pkgchk nfs-utils > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+	echo "installing nfs-utils package"
+	$installer nfs-utils 
+	echo "done..." 
+else
+	echo "nfs-utils already installed. Skipping..." 
+fi
+
+#https://app.datadoghq.com/account/settings#integrations/postgres
+echo "checking Postgres integration... "
+cnt=$(grep -c datadog /root/.pgpass 2>&1)
+if [ ! -f /root/.pgpass -o "$cnt" = "0" ]; then
+	echo "${pg_dest}:postgres:datadog:X83FGVReB5DJmbCSIShu1x8L" >> /root/.pgpass
+	chmod 600 /root/.pgpass
+	sudo -u postgres psql -qc "create user datadog with password 'X83FGVReB5DJmbCSIShu1x8L';
+grant SELECT ON pg_stat_database to datadog;" 
+	# try to check the DB
+	psql -w datadog -h $pg_ip -p $pg_port -d postgres -c "select * from pg_stat_database LIMIT(1);"  \
+	&& echo -e "\e[0;32mPostgres connection - OK\e[0m"  || \
+	echo -e "\e[0;31mCannot connect to Postgres\e[0m" ;  
+	
+fi
+
+
+
+
+
+echo "restarting datadog-agent.service"
+systemctl restart datadog-agent.service
+
+echo "waiting 35 seconds for agent retart stabilization"
+sleep 35
+
+if [ -x /etc/init.d/datadog-agent ]; then
+	/etc/init.d/datadog-agent info  | egrep -A 2 'postgres|nfs'
+elif [ -x /bin/datadog-agent ]; then
+	/bin/datadog-agent status  | egrep -A 2 'postgres|nfs|cpu|memory|process|system_swap|disk|uptime'
+fi
+
+# for a custom service
+#cat > /usr/lib/systemd/system/starfish-dog.service <<EOF
+#[Unit]
+#Description=Starfish Datadog Extension Services
+#
+#[Service]
+#Type=notify
+# really doesn't exist
+#EnvironmentFile=-/etc/sysconfig/starfish-dog
+#ExecStart=/usr/local/bin/starfishdog
+#Restart=on-failure
+#UMask=0066
+#StandardOutput=null
+#
+#[Install]
+#WantedBy=multi-user.target
+#;Alias=syslog.service
+#EOF
+#
+#if [ ! -L ]; then
+#	ln -s /usr/lib/systemd/system/starfish-dog.service /etc/systemd/system/multi-user.target.wants/starfish-dog.service
+#fi
+
+exit 0
+
+
