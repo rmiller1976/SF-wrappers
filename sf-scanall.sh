@@ -41,9 +41,10 @@ set -euo pipefail
 # Change Log
 # v1.01 March 30, 2018 - Add ability to continue when it senses failed scans
 #                      - Consolidate reporting of failed volumes
+# v1.02 April 3, 2018  - Add delay between scan executions
 
 # Set variables
-readonly VERSION="1.01 March 30, 2018"
+readonly VERSION="1.02 April 3, 2018"
 readonly PROG="${0##*/}"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly SFHOME="${SFHOME:-/opt/starfish}"
@@ -65,6 +66,7 @@ TARGETMTIME=""
 NUMMTIME=""
 TARGETDIFF=""
 NUMDIFF=""
+DELAY=10
 
 logprint() {
   echo -e "$(date +%D-%T): $*" >> $LOGFILE
@@ -114,6 +116,7 @@ Optional:
   --parallel		- Number of concurrent scans (default: 3)
   --exclude <volume>	- Exclude volume from scan
   --from <sender>	- Email sender (default: root)
+  --delay <seconds>	- Delay between scan initiations (default: 10)
 
 ${PROG} --email bob@company.com --parallel 10 --mtime 5
 Run up to 10 volume scans in parallel, looking at the scan 5 scans ago for each volume to determine whether this should be a differential or mtime scan. Email recipient for notifications is bob@company.com
@@ -158,6 +161,11 @@ parse_input_parameters() {
       shift
       PARALLEL=$1
       ;;
+    "--delay")
+      check_parameters_value "$@"
+      shift
+      DELAY=$1
+      ;;
     *)
       logprint "input parameter: $1 unknown. Exiting.."
       fatal "input parameter: $1 unknown. Exiting.."
@@ -182,6 +190,7 @@ parse_input_parameters() {
   fi
   logprint " mtime scans (0=diff, 1=mtime): $MTIMECHK"
   logprint " parallel scans: $PARALLEL"
+  logprint " Delay between scans: $DELAY"
 }
 
 check_mailx_exists() {
@@ -243,17 +252,17 @@ last_scan() {
 
 initiate_scans() {
   NUMMTIME=`echo $TARGETMTIME | wc -w`
+set +x
   logprint "NUMMTIME: $NUMMTIME"
   if [ $NUMMTIME -gt 0 ] ; then
     logprint "starting mtime scans on $NUMMTIME volumes"
-    echo $TARGETMTIME | xargs  -n1 -P $PARALLEL ${SF} scan start -t mtime --wait &>> $LOGFILE
+    echo $TARGETMTIME | xargs  -n1 -P $PARALLEL -d" " -I % sh -c "{ ${SF} scan start % -t mtime --wait >> $LOGFILE; sleep $DELAY; }"
   fi
-
   NUMDIFF=`echo $TARGETDIFF | wc -w`
   logprint "NUMDIFF: $NUMDIFF"
   if [ $NUMDIFF -gt 0 ] ; then
      logprint "Starting diff scans on $NUMDIFF volumes"
-    echo $TARGETDIFF | xargs  -n1 -P $PARALLEL ${SF} scan start -t diff --wait &>> $LOGFILE
+    echo $TARGETDIFF | xargs  -n1 -P $PARALLEL -d" " -I % sh -c "{ ${SF} scan start % -t diff --wait >> $LOGFILE; sleep $DELAY; }"
   fi
   logprint "Scans complete"
 }
