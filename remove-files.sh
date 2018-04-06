@@ -43,13 +43,14 @@ set -euo pipefail
 # 1.01 (March 27, 2018) - Update tally_size to use awk instead of sed -i
 #                       - Add info to final email including where to find files fed to SF job engine,
 #                         and how much data was deleted
-# 1.02 (March XX, 2018) - Update usage
+# 1.02 (April 6, 2018)  - Update usage
 #                       - Add more comments into script
 #                       - Add ability to use latest of a/c/mtime 
 #                       - Add check that sf query -raw.tmp file has data
+#                       - Update AWK in tally routine to make more efficient
 
 # Set variables
-readonly VERSION="1.02inpro March 28, 2018"
+readonly VERSION="1.02 April 6, 2018"
 readonly PROG="${0##*/}"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly SFHOME="${SFHOME:-/opt/starfish}"
@@ -271,17 +272,22 @@ tally_size() {
   local size
   totaltally=0
   size=0
-#  set +e
-  awk -v amounttodelete="$TOREMOVE" -F, '\
+  set +e
+  totaltally=`awk -v outfile="$2" -v amounttodelete="$TOREMOVE" -F, '
     BEGIN { rollingtally=0 }
-    { if (rollingtally < amounttodelete) { rollingtally=rollingtally+$2;print $1 } }
-    END { print rollingtally }
-    ' $1 > $2
-  totaltally=`tail -n 1 $2 | tee >(wc -c | xargs -I {} truncate $2 -s -{})`
+    {
+      if (rollingtally < amounttodelete) 
+        {
+          rollingtally=rollingtally+$2; print $1 > outfile
+        }
+      else { exit(0); }
+    }
+    END { print rollingtally }' $1`
   logprint "Total data being sent to job engine for deletion: $totaltally Bytes"
 }
 
 run_sf_query() {
+# Run the SF query command, outputting values for atime, mtime, ctime, volume, path, filename, and size to -raw.tmp file
   local errorcode
   local joboutput
   local timeframe
@@ -318,39 +324,50 @@ run_sf_query() {
     email_alert "SF query failed with error: $errorcode."
     exit 1
   fi
+  if [[ ! -s ${FILELIST}-raw.tmp ]]; then
+    logprint "SF query returned empty result. Exiting.."
+    echo "SF query returned empty result. Exiting.."
+    email_alert "SF query returnd empty result. Exiting.."
+    exit 1
+  fi
 }
 
 format_results() {
 # passing in $AGEONLY
+# Sort the -raw.tmp file based atime, mtime, ctime, or the latest of all three. 
   logprint "Formatting results:"
-  logprint " Finding
   logprint " Sorting results"
   case $MODIFIER in
-    "m")
-      sort -k2 -n ${FILELIST}-raw.tmp > ${FILELIST}-1-sorted.tmp
-      ;;
     "a")
       sort -k1 -n ${FILELIST}-raw.tmp > ${FILELIST}-1-sorted.tmp
+      ;;
+    "m")
+      sort -k2 -n ${FILELIST}-raw.tmp > ${FILELIST}-1-sorted.tmp
       ;;
     "c")
       sort -k3 -n ${FILELIST}-raw.tmp > ${FILELIST}-1-sorted.tmp
       ;;
-    "amc)
-      awk -F, ' 
-
-
-
-
-
-
-  sort ${FILELIST}-raw.tmp > ${FILELIST}-1-sorted.tmp
+    "amc")
+      awk -F, '\
+      {
+        largest=$1
+        if (largest < $2)
+          largest=$2;
+        if (largest < $3)
+          largest=$3;
+        print largest","$4","$5","$6","$7
+      }' < ${FILELIST}-raw.tmp > ${FILELIST}-1a-sorted.tmp
+      sort ${FILELIST}-1a-sorted.tmp > ${FILELIST}-1-sorted.tmp
+      ;;
+  esac
 #  rm ${FILELIST}-raw.tmp
-  logprint " Removing ${MODIFIER}time values from file"
+# Remove timestamps from file because we no longer need them, as the data is already sorted. 
+  logprint " Removing time values from file"
   sed 's/^[^,]*,//g' < ${FILELIST}-1-sorted.tmp > ${FILELIST}-2-notime.tmp
-# format json output converts from json output ("vol","path","fn") to something we can almost use (/volume/path/fn,size)
+# format json output converts from json output ("vol","path","fn") to something we can almost use (/volume/path/fn,size). Final comma in output is kept to make it easier to remove the size value later on.
   logprint " Formatting JSON output:"
   format_json_output ${FILELIST}-2-notime.tmp ${FILELIST}-3-formatted.tmp
-#remove exclusions
+# remove exclusions
   if [[ -n $EXCLUDELIST ]]; then
     remove_exclusions $EXCLUDELIST ${FILELIST}-3-formatted.tmp
   fi
