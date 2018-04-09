@@ -48,6 +48,7 @@ set -euo pipefail
 #                       - Add ability to use latest of a/c/mtime 
 #                       - Add check that sf query -raw.tmp file has data
 #                       - Update AWK in tally routine to make more efficient
+# 1.03 (April 9, 2018)  - Add in EXCLGROUP parameter to exclude files belonging to group
 
 # Set variables
 readonly VERSION="1.02 April 6, 2018"
@@ -72,6 +73,7 @@ HIGHMARK=""
 PCENTUSED=""
 AGEONLY="0"
 EXCLUDELIST=""
+EXCLGROUP=""
 ONEPERCENT=""
 # Set TOREMOVE to 10 Pb
 TOREMOVE="10000000000000000"
@@ -132,6 +134,7 @@ Optional:
    --low <#>		      - Specify a low water mark for % volume used (between 0 and 100)
    --high <#>		      - Specify a high water mark for % volume used (between 0 and 100)
    --exclude <filename>	      - Specify an exclusion list (Uses simple pattern matching, and this file should have no empty lines)
+   --exclgroup <groupname>    - Exclude files belonging to <groupname>
 
 Examples:
 $PROG nfs1:/data/project1 --dry-run --days 90 --from sysadmin@company.com  --email a@company.com,b@company.com
@@ -193,6 +196,11 @@ parse_input_parameters() {
       shift
       EXCLUDELIST=$1
       ;;
+    "--exclgroup")
+      check_parameters_value "$@"
+      shift
+      EXCLGROUP=$1
+      ;;
     *)
       logprint "input parameter: $1 unknown. Exiting.."
       fatal "input parameter: $1 unknown. Exiting.."
@@ -223,6 +231,9 @@ parse_input_parameters() {
   fi
   if [[ -n $EXCLUDELIST ]]; then
     logprint " Exclusion list: $EXCLUDELIST"
+  fi
+  if [[ -n $EXCLGROUP ]]; then
+    logprint " Exclude group: $EXCLGROUP"
   fi
   logprint " Volume: $SFVOLUME"
   logprint " Days: $DAYS_AGO"
@@ -292,6 +303,10 @@ run_sf_query() {
   local joboutput
   local timeframe
   local older_than
+  local excludegroup
+  if [[ -n $EXCLGROUP ]]; then
+    excludegroup="--not --groupname $EXCLGROUP"
+  fi
   older_than="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
   case $MODIFIER in
     "m")
@@ -311,7 +326,7 @@ run_sf_query() {
       ;;
   esac
   set +e
-  joboutput="$(${SF} query $SFVOLUME $timeframe --type f -H -d, --format "at mt ct volume path fn size" > ${FILELIST}-raw.tmp)"
+  joboutput="$(${SF} query $SFVOLUME $timeframe --type f -H -d, --format "at mt ct volume path fn size" $excludegroup > ${FILELIST}-raw.tmp)"
   errorcode=$?
   set -e
   if [[ $errorcode -eq 0 ]]; then
