@@ -51,7 +51,7 @@ set -euo pipefail
 # 1.03 (April 9, 2018)  - Add in EXCLGROUP parameter to exclude files belonging to group
 
 # Set variables
-readonly VERSION="1.02 April 6, 2018"
+readonly VERSION="1.03 April 9, 2018"
 readonly PROG="${0##*/}"
 readonly NOW=$(date +"%Y%m%d-%H%M%S")
 readonly SFHOME="${SFHOME:-/opt/starfish}"
