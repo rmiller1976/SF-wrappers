@@ -304,8 +304,11 @@ run_sf_query() {
   local timeframe
   local older_than
   local excludegroup
+  
   if [[ -n $EXCLGROUP ]]; then
     excludegroup="--not --groupname $EXCLGROUP"
+  else
+   excludegroup=""
   fi
   older_than="$(date --date "${DAYS_AGO} days ago" +"%Y%m%d")"
   case $MODIFIER in
