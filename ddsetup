@@ -51,6 +51,14 @@ if [ -f /etc/redhat-release ]; then
 		# install base package
 		bash -c "$(curl -L https://raw.githubusercontent.com/DataDog/datadog-agent/master/cmd/agent/install_script.sh)"
 	fi
+  ddversion=`rpm -qa datadog-agent`
+  # check for upgrade
+  if [[ $ddversion =~ "datadog-agent-5" ]]; then
+    echo "upgrading datadog-agent"
+    mv /etc/dd-agent /etc/dd-agent.old
+    sudo rpm -e datadog-agent
+		bash -c "$(curl -L https://raw.githubusercontent.com/DataDog/datadog-agent/master/cmd/agent/install_script.sh)"
+  fi
 	# check/fix global tags
 	if [ -f /etc/dd-agent/datadog.conf ]; then
 		# add/fix site tag
