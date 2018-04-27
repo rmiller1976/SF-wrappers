@@ -329,7 +329,7 @@ run_sf_query() {
       ;;
   esac
   set +e
-  joboutput="$(${SF} query $SFVOLUME $timeframe --type f -H -d, --format "at mt ct volume path fn size" $excludegroup > ${FILELIST}-raw.tmp)"
+  joboutput="$(${SF} query $SFVOLUME --size 0-0 $timeframe --type f -H -d, --format "at mt ct volume path fn size" $excludegroup > ${FILELIST}-raw.tmp)"
   errorcode=$?
   set -e
   if [[ $errorcode -eq 0 ]]; then
